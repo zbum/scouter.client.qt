@@ -1,0 +1,66 @@
+package settings
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+)
+
+const (
+	configDir = "scouter.client.go"
+	configFile = "settings.json"
+)
+
+// AppSettings holds application settings
+type AppSettings struct {
+	Geometry    []byte   `json:"geometry"`
+	WindowState []byte   `json:"windowState"`
+	ChartCount  int      `json:"chartCount"`
+	ChartTitles []string `json:"chartTitles"`
+}
+
+// getPath returns the settings file path
+func getPath() string {
+	homeDir, _ := os.UserHomeDir()
+	dir := filepath.Join(homeDir, ".config", configDir)
+	os.MkdirAll(dir, 0755)
+	return filepath.Join(dir, configFile)
+}
+
+// Load loads settings from the JSON file
+func Load() *AppSettings {
+	s := &AppSettings{ChartCount: 1}
+	data, err := os.ReadFile(getPath())
+	if err != nil {
+		return s
+	}
+	json.Unmarshal(data, s)
+	return s
+}
+
+// Save saves settings to the JSON file
+func (s *AppSettings) Save() error {
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(getPath(), data, 0644)
+}
+
+// SetGeometry updates and saves geometry
+func (s *AppSettings) SetGeometry(geometry []byte) {
+	s.Geometry = geometry
+	s.Save()
+}
+
+// SetWindowState updates and saves window state
+func (s *AppSettings) SetWindowState(state []byte) {
+	s.WindowState = state
+	s.Save()
+}
+
+// SetChartCount updates and saves chart count
+func (s *AppSettings) SetChartCount(count int) {
+	s.ChartCount = count
+	s.Save()
+}

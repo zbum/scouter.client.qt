@@ -1,5 +1,5 @@
-APP_NAME := miqt-app
-BUNDLE_NAME := MiqtApp.app
+APP_NAME := scouter.client
+BUNDLE_NAME := ScouterQt.app
 DIST_DIR := dist
 
 # Qt6 requires C++17
@@ -15,7 +15,12 @@ build:
 bundle: build
 	@mkdir -p $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS
 	@mkdir -p $(DIST_DIR)/$(BUNDLE_NAME)/Contents/Resources
-	@cp $(DIST_DIR)/$(APP_NAME) $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS/
+	@cp $(DIST_DIR)/$(APP_NAME) $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS/$(APP_NAME)-bin
+	@echo '#!/bin/bash' > $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS/$(APP_NAME)
+	@echo 'DIR="$$(cd "$$(dirname "$$0")" && pwd)"' >> $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS/$(APP_NAME)
+	@echo 'export GODEBUG=asyncpreemptoff=1' >> $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS/$(APP_NAME)
+	@echo 'exec "$$DIR/$(APP_NAME)-bin" "$$@"' >> $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS/$(APP_NAME)
+	@chmod +x $(DIST_DIR)/$(BUNDLE_NAME)/Contents/MacOS/$(APP_NAME)
 	@cp assets/AppIcon.icns $(DIST_DIR)/$(BUNDLE_NAME)/Contents/Resources/
 	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $(DIST_DIR)/$(BUNDLE_NAME)/Contents/Info.plist
 	@echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> $(DIST_DIR)/$(BUNDLE_NAME)/Contents/Info.plist

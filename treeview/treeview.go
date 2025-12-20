@@ -1,19 +1,19 @@
-package main
+package treeview
 
 import (
 	"github.com/mappu/miqt/qt6"
 )
 
-// TreeManager manages the tree view dock widget
-type TreeManager struct {
+// Manager manages the tree view dock widget
+type Manager struct {
 	dock     *qt6.QDockWidget
 	treeView *qt6.QTreeView
 	model    *qt6.QStandardItemModel
 }
 
-// NewTreeManager creates a new tree manager with a dock widget
-func NewTreeManager(mainWindow *qt6.QMainWindow) *TreeManager {
-	tm := &TreeManager{}
+// NewManager creates a new tree manager with a dock widget
+func NewManager(mainWindow *qt6.QMainWindow) *Manager {
+	tm := &Manager{}
 
 	// Create dock widget
 	tm.dock = qt6.NewQDockWidget2("Explorer")
@@ -26,7 +26,7 @@ func NewTreeManager(mainWindow *qt6.QMainWindow) *TreeManager {
 	tm.treeView.SetHeaderHidden(true)
 
 	// Create model
-	tm.model = qt6.NewQStandardItemModel2()
+	tm.model = qt6.NewQStandardItemModel2(0, 1)
 	tm.treeView.SetModel(tm.model.QAbstractItemModel)
 
 	// Add sample data
@@ -42,7 +42,7 @@ func NewTreeManager(mainWindow *qt6.QMainWindow) *TreeManager {
 }
 
 // addSampleData adds sample items to the tree
-func (tm *TreeManager) addSampleData() {
+func (tm *Manager) addSampleData() {
 	// Root items
 	projectItem := qt6.NewQStandardItem2("Project")
 	projectItem.SetEditable(false)
@@ -53,17 +53,17 @@ func (tm *TreeManager) addSampleData() {
 
 	mainFile := qt6.NewQStandardItem2("main.go")
 	mainFile.SetEditable(false)
-	srcItem.AppendRow(mainFile)
+	srcItem.AppendRow([]*qt6.QStandardItem{mainFile})
 
 	chartFile := qt6.NewQStandardItem2("chart.go")
 	chartFile.SetEditable(false)
-	srcItem.AppendRow(chartFile)
+	srcItem.AppendRow([]*qt6.QStandardItem{chartFile})
 
 	menuFile := qt6.NewQStandardItem2("menu.go")
 	menuFile.SetEditable(false)
-	srcItem.AppendRow(menuFile)
+	srcItem.AppendRow([]*qt6.QStandardItem{menuFile})
 
-	projectItem.AppendRow(srcItem)
+	projectItem.AppendRow([]*qt6.QStandardItem{srcItem})
 
 	// Assets folder
 	assetsItem := qt6.NewQStandardItem2("assets")
@@ -71,40 +71,40 @@ func (tm *TreeManager) addSampleData() {
 
 	iconFile := qt6.NewQStandardItem2("AppIcon.icns")
 	iconFile.SetEditable(false)
-	assetsItem.AppendRow(iconFile)
+	assetsItem.AppendRow([]*qt6.QStandardItem{iconFile})
 
-	projectItem.AppendRow(assetsItem)
+	projectItem.AppendRow([]*qt6.QStandardItem{assetsItem})
 
 	// Config files
 	makefileItem := qt6.NewQStandardItem2("Makefile")
 	makefileItem.SetEditable(false)
-	projectItem.AppendRow(makefileItem)
+	projectItem.AppendRow([]*qt6.QStandardItem{makefileItem})
 
 	goModItem := qt6.NewQStandardItem2("go.mod")
 	goModItem.SetEditable(false)
-	projectItem.AppendRow(goModItem)
+	projectItem.AppendRow([]*qt6.QStandardItem{goModItem})
 
 	// Add to model
-	tm.model.AppendRow(projectItem)
+	tm.model.AppendRow([]*qt6.QStandardItem{projectItem})
 
 	// Expand project item
 	tm.treeView.ExpandAll()
 }
 
 // AddItem adds a new item to the tree under the specified parent
-func (tm *TreeManager) AddItem(parentText, itemText string) {
+func (tm *Manager) AddItem(parentText, itemText string) {
 	// Find parent item
-	rootIndex := tm.model.Index(0, 0, qt6.QModelIndex{})
+	rootIndex := tm.model.Index(0, 0, &qt6.QModelIndex{})
 	parentItem := tm.model.ItemFromIndex(rootIndex)
 
 	if parentItem != nil && parentItem.Text() == parentText {
 		newItem := qt6.NewQStandardItem2(itemText)
 		newItem.SetEditable(false)
-		parentItem.AppendRow(newItem)
+		parentItem.AppendRow([]*qt6.QStandardItem{newItem})
 	}
 }
 
 // Dock returns the dock widget
-func (tm *TreeManager) Dock() *qt6.QDockWidget {
+func (tm *Manager) Dock() *qt6.QDockWidget {
 	return tm.dock
 }

@@ -7,6 +7,53 @@ import (
 	"github.com/mappu/miqt/qt6"
 )
 
+// ThemeColors holds colors for light/dark themes
+type ThemeColors struct {
+	Background      *qt6.QColor
+	ChartBackground *qt6.QColor
+	GridColor       *qt6.QColor
+	AxisColor       *qt6.QColor
+	TextColor       *qt6.QColor
+	TitleColor      *qt6.QColor
+	MarkerColor     *qt6.QColor
+	LineColor       *qt6.QColor
+}
+
+// isDarkMode detects if the system is in dark mode
+func isDarkMode() bool {
+	palette := qt6.QGuiApplication_Palette()
+	windowColor := palette.Window().Color()
+	// If the window background is dark (lightness < 128), we're in dark mode
+	return windowColor.Lightness() < 128
+}
+
+// getThemeColors returns colors appropriate for the current theme
+func getThemeColors() *ThemeColors {
+	if isDarkMode() {
+		return &ThemeColors{
+			Background:      qt6.NewQColor3(26, 26, 46),
+			ChartBackground: qt6.NewQColor3(30, 30, 50),
+			GridColor:       qt6.NewQColor3(60, 60, 90),
+			AxisColor:       qt6.NewQColor3(150, 150, 180),
+			TextColor:       qt6.NewQColor3(200, 200, 220),
+			TitleColor:      qt6.NewQColor3(220, 220, 240),
+			MarkerColor:     qt6.NewQColor3(255, 100, 100),
+			LineColor:       qt6.NewQColor3(100, 150, 255),
+		}
+	}
+	// Light mode colors
+	return &ThemeColors{
+		Background:      qt6.NewQColor3(245, 245, 250),
+		ChartBackground: qt6.NewQColor3(255, 255, 255),
+		GridColor:       qt6.NewQColor3(200, 200, 210),
+		AxisColor:       qt6.NewQColor3(80, 80, 100),
+		TextColor:       qt6.NewQColor3(50, 50, 70),
+		TitleColor:      qt6.NewQColor3(30, 30, 50),
+		MarkerColor:     qt6.NewQColor3(200, 50, 50),
+		LineColor:       qt6.NewQColor3(50, 100, 200),
+	}
+}
+
 // DataPoint represents a single data point in the chart
 type DataPoint struct {
 	Timestamp time.Time
@@ -15,23 +62,27 @@ type DataPoint struct {
 
 // Config holds chart configuration
 type Config struct {
-	MaxPoints  int   // Maximum number of points to display
-	MaxValue   int64 // Maximum Y value (milliseconds)
-	TimeRange  int   // Time range in seconds
-	Title      string
-	MinWidth   int
-	MinHeight  int
+	MaxPoints   int   // Maximum number of points to display
+	MaxValue    int64 // Maximum Y value (milliseconds)
+	TimeRange   int   // Time range in seconds
+	Title       string
+	MinWidth    int
+	MinHeight   int
+	ShowMarkers bool // Show X markers at data points
+	ShowLines   bool // Show lines connecting data points
 }
 
 // DefaultConfig returns default chart configuration
 func DefaultConfig() Config {
 	return Config{
-		MaxPoints:  60,
-		MaxValue:   1000,
-		TimeRange:  60,
-		Title:      "Response Time",
-		MinWidth:   300,
-		MinHeight:  200,
+		MaxPoints:   60,
+		MaxValue:    1000,
+		TimeRange:   60,
+		Title:       "Response Time",
+		MinWidth:    300,
+		MinHeight:   200,
+		ShowMarkers: true,
+		ShowLines:   true,
 	}
 }
 
@@ -64,7 +115,7 @@ func NewWithConfig(parent *qt6.QWidget, config Config) *Widget {
 	}
 
 	chart.widget.SetMinimumSize2(config.MinWidth, config.MinHeight)
-	chart.widget.SetStyleSheet("background-color: #1a1a2e; border: 1px solid #4a4a6a; border-radius: 5px;")
+	// Don't set stylesheet - colors will be determined by system theme in paint()
 
 	// Enable focus for keyboard events
 	chart.widget.SetFocusPolicy(qt6.StrongFocus)
@@ -134,6 +185,33 @@ func (c *Widget) SetTitle(title string) {
 	c.widget.Update()
 }
 
+// Title returns the chart title
+func (c *Widget) Title() string {
+	return c.config.Title
+}
+
+// SetShowMarkers enables or disables X markers at data points
+func (c *Widget) SetShowMarkers(show bool) {
+	c.config.ShowMarkers = show
+	c.widget.Update()
+}
+
+// SetShowLines enables or disables lines connecting data points
+func (c *Widget) SetShowLines(show bool) {
+	c.config.ShowLines = show
+	c.widget.Update()
+}
+
+// ShowMarkers returns whether X markers are enabled
+func (c *Widget) ShowMarkers() bool {
+	return c.config.ShowMarkers
+}
+
+// ShowLines returns whether connecting lines are enabled
+func (c *Widget) ShowLines() bool {
+	return c.config.ShowLines
+}
+
 // DataPoints returns a copy of current data points
 func (c *Widget) DataPoints() []DataPoint {
 	result := make([]DataPoint, len(c.dataPoints))
@@ -146,6 +224,9 @@ func (c *Widget) paint() {
 	defer painter.Delete()
 
 	painter.SetRenderHint(qt6.QPainter__Antialiasing)
+
+	// Get theme colors
+	theme := getThemeColors()
 
 	width := c.widget.Width()
 	height := c.widget.Height()
@@ -160,16 +241,13 @@ func (c *Widget) paint() {
 	chartHeight := height - marginTop - marginBottom
 
 	// Draw background
-	bgColor := qt6.NewQColor3(26, 26, 46)
-	painter.FillRect5(0, 0, width, height, bgColor)
+	painter.FillRect5(0, 0, width, height, theme.Background)
 
 	// Draw chart area background
-	chartBgColor := qt6.NewQColor3(30, 30, 50)
-	painter.FillRect5(marginLeft, marginTop, chartWidth, chartHeight, chartBgColor)
+	painter.FillRect5(marginLeft, marginTop, chartWidth, chartHeight, theme.ChartBackground)
 
 	// Draw grid lines
-	gridColor := qt6.NewQColor3(60, 60, 90)
-	gridPen := qt6.NewQPen3(gridColor)
+	gridPen := qt6.NewQPen3(theme.GridColor)
 	gridPen.SetStyle(qt6.DotLine)
 	painter.SetPenWithPen(gridPen)
 
@@ -214,16 +292,14 @@ func (c *Widget) paint() {
 	}
 
 	// Draw axes
-	axisColor := qt6.NewQColor3(150, 150, 180)
-	axisPen := qt6.NewQPen3(axisColor)
+	axisPen := qt6.NewQPen3(theme.AxisColor)
 	axisPen.SetWidth(2)
 	painter.SetPenWithPen(axisPen)
 	painter.DrawLine2(marginLeft, marginTop, marginLeft, marginTop+chartHeight)
 	painter.DrawLine2(marginLeft, marginTop+chartHeight, marginLeft+chartWidth, marginTop+chartHeight)
 
 	// Draw Y axis labels (milliseconds)
-	textColor := qt6.NewQColor3(200, 200, 220)
-	painter.SetPen(textColor)
+	painter.SetPen(theme.TextColor)
 	for i := 0; i <= 5; i++ {
 		y := marginTop + (chartHeight * i / 5)
 		msValue := c.config.MaxValue - (int64(i) * c.config.MaxValue / 5)
@@ -231,29 +307,33 @@ func (c *Widget) paint() {
 	}
 
 	// Draw X axis labels (time) - same positions as grid lines
-	painter.SetPen(textColor)
+	painter.SetPen(theme.TextColor)
 	for _, gl := range gridLines {
 		painter.DrawText3(gl.x-20, height-5, gl.time.Format("15:04:05"))
 	}
 
-	// Draw data points as X markers
-	if len(c.dataPoints) > 1 {
-		markerColor := qt6.NewQColor3(255, 100, 100)
-		markerPen := qt6.NewQPen3(markerColor)
-		markerPen.SetWidth(2)
-		painter.SetPenWithPen(markerPen)
+	// Draw data points
+	if len(c.dataPoints) > 1 && (c.config.ShowMarkers || c.config.ShowLines) {
+		var markerPen *qt6.QPen
+		var linePen *qt6.QPen
 
-		// Line color for connecting points
-		lineColor := qt6.NewQColor3(100, 150, 255)
-		linePen := qt6.NewQPen3(lineColor)
-		linePen.SetWidth(1)
+		if c.config.ShowMarkers {
+			markerPen = qt6.NewQPen3(theme.MarkerColor)
+			markerPen.SetWidth(1)
+		}
+
+		if c.config.ShowLines {
+			linePen = qt6.NewQPen3(theme.LineColor)
+			linePen.SetWidth(1)
+		}
 
 		now := time.Now()
 		timeRange := float64(c.config.TimeRange)
 
 		var prevX, prevY int
+		var hasPrev bool
 
-		for i, point := range c.dataPoints {
+		for _, point := range c.dataPoints {
 			// Calculate position
 			secondsAgo := now.Sub(point.Timestamp).Seconds()
 			if secondsAgo > timeRange {
@@ -272,25 +352,27 @@ func (c *Widget) paint() {
 			}
 
 			// Draw connecting line
-			if i > 0 && prevX > 0 {
+			if c.config.ShowLines && hasPrev {
 				painter.SetPenWithPen(linePen)
 				painter.DrawLine2(prevX, prevY, xPos, yPos)
 			}
 
 			// Draw X marker
-			painter.SetPenWithPen(markerPen)
-			markerSize := 4
-			painter.DrawLine2(xPos-markerSize, yPos-markerSize, xPos+markerSize, yPos+markerSize)
-			painter.DrawLine2(xPos-markerSize, yPos+markerSize, xPos+markerSize, yPos-markerSize)
+			if c.config.ShowMarkers {
+				painter.SetPenWithPen(markerPen)
+				markerSize := 2
+				painter.DrawLine2(xPos-markerSize, yPos-markerSize, xPos+markerSize, yPos+markerSize)
+				painter.DrawLine2(xPos-markerSize, yPos+markerSize, xPos+markerSize, yPos-markerSize)
+			}
 
 			prevX = xPos
 			prevY = yPos
+			hasPrev = true
 		}
 	}
 
 	// Draw title
-	titleColor := qt6.NewQColor3(220, 220, 240)
-	painter.SetPen(titleColor)
+	painter.SetPen(theme.TitleColor)
 	painter.DrawText3(marginLeft+chartWidth/2-40, 15, c.config.Title)
 
 	painter.End()

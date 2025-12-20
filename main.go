@@ -5,37 +5,39 @@ import (
 	"math/rand"
 	"os"
 
-	"miqt-ex1/chart"
+	"scouter.client.qt/chart"
+	"scouter.client.qt/groupnav"
+	"scouter.client.qt/settings"
 
 	"github.com/mappu/miqt/qt6"
 )
 
-const (
-	orgName = "MiqtExample"
-	appName = "MiqtDesktopApp"
-)
-
-var settings *qt6.QSettings
+const appName = "scouter.client.go"
 
 // ChartManager manages multiple chart dock widgets
 type ChartManager struct {
-	mainWindow *qt6.QMainWindow
-	charts     []*ChartDock
-	chartCount int
-	timer      *qt6.QTimer
+	mainWindow     *qt6.QMainWindow
+	charts         []*ChartDock
+	chartCount     int
+	timer          *qt6.QTimer
+	onStateChanged func() // Callback when dock state changes
+	isRestoring    bool   // Flag to prevent saving during restore
+	appSettings    *settings.AppSettings
 }
 
 // ChartDock holds a chart widget and its dock
 type ChartDock struct {
-	dock   *qt6.QDockWidget
-	chart  *chart.Widget
-	id     int
+	dock            *qt6.QDockWidget
+	chart           *chart.Widget
+	id              int
+	objectNameBytes []byte // Keep object name bytes alive for QAnyStringView
 }
 
-func NewChartManager(mainWindow *qt6.QMainWindow) *ChartManager {
+func NewChartManager(mainWindow *qt6.QMainWindow, appSettings *settings.AppSettings) *ChartManager {
 	cm := &ChartManager{
-		mainWindow: mainWindow,
-		chartCount: 0,
+		mainWindow:  mainWindow,
+		chartCount:  0,
+		appSettings: appSettings,
 	}
 
 	// Timer for updating all charts
@@ -52,36 +54,7 @@ func NewChartManager(mainWindow *qt6.QMainWindow) *ChartManager {
 }
 
 func (cm *ChartManager) AddChart() *ChartDock {
-	cm.chartCount++
-	title := fmt.Sprintf("Chart %d", cm.chartCount)
-
-	// Create dock widget
-	dock := qt6.NewQDockWidget2(title)
-	objectName := qt6.NewQAnyStringView3(fmt.Sprintf("chartDock%d", cm.chartCount))
-	dock.SetObjectName(*objectName)
-	dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
-
-	// Create chart widget
-	chartWidget := chart.New(nil)
-	dock.SetWidget(chartWidget.QWidget())
-
-	// Add initial data
-	for i := 0; i < 10; i++ {
-		value := int64(50 + rand.Intn(450))
-		chartWidget.AddPoint(value)
-	}
-
-	// Add to main window
-	cm.mainWindow.AddDockWidget(qt6.RightDockWidgetArea, dock)
-
-	cd := &ChartDock{
-		dock:  dock,
-		chart: chartWidget,
-		id:    cm.chartCount,
-	}
-	cm.charts = append(cm.charts, cd)
-
-	return cd
+	return cm.AddChartWithTitle("")
 }
 
 func (cm *ChartManager) RemoveChart(cd *ChartDock) {
@@ -96,6 +69,9 @@ func (cm *ChartManager) RemoveChart(cd *ChartDock) {
 	// Remove from main window
 	cm.mainWindow.RemoveDockWidget(cd.dock)
 	cd.dock.DeleteLater()
+
+	// Notify state changed (dock removed)
+	cm.notifyStateChanged()
 }
 
 func (cm *ChartManager) RemoveLastChart() {
@@ -108,65 +84,184 @@ func (cm *ChartManager) ChartCount() int {
 	return len(cm.charts)
 }
 
-func (cm *ChartManager) SaveState() {
-	// Save chart count
-	countKey := qt6.NewQAnyStringView3("chartCount")
-	countValue := qt6.NewQVariant6(int64(cm.chartCount))
-	settings.SetValue(*countKey, countValue)
-
-	// Save window state (dock positions)
-	stateKey := qt6.NewQAnyStringView3("windowState")
-	stateValue := qt6.NewQVariant12(cm.mainWindow.SaveState())
-	settings.SetValue(*stateKey, stateValue)
-
-	settings.Sync()
-}
-
-func (cm *ChartManager) RestoreState() {
-	// Restore chart count
-	countKey := qt6.NewQAnyStringView3("chartCount")
-	countValue := settings.ValueWithKey(*countKey)
-
-	chartCount := 1 // default
-	if countValue != nil {
-		chartCount = countValue.ToInt()
-		if chartCount < 1 {
-			chartCount = 1
-		}
+// AddChartWithTitle adds a chart with a specific title
+func (cm *ChartManager) AddChartWithTitle(title string) *ChartDock {
+	cm.chartCount++
+	if title == "" {
+		title = fmt.Sprintf("Chart %d", cm.chartCount)
 	}
 
-	// Create charts
+	// Create dock widget
+	dock := qt6.NewQDockWidget2(title)
+
+	// Create object name bytes and keep in memory for Qt state save/restore
+	objNameBytes := []byte(fmt.Sprintf("chartDock%d", cm.chartCount))
+	objNameView := qt6.NewQAnyStringView2(objNameBytes)
+	dock.SetObjectName(*objNameView)
+	dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
+
+	// Create chart widget
+	chartWidget := chart.New(nil)
+	chartWidget.SetTitle(title)
+	dock.SetWidget(chartWidget.QWidget())
+
+	// Add initial data
+	for i := 0; i < 10; i++ {
+		value := int64(50 + rand.Intn(450))
+		chartWidget.AddPoint(value)
+	}
+
+	// Connect dock change signals to save state
+	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
+		cm.notifyStateChanged()
+	})
+	dock.OnTopLevelChanged(func(topLevel bool) {
+		cm.notifyStateChanged()
+	})
+	dock.OnVisibilityChanged(func(visible bool) {
+		cm.notifyStateChanged()
+	})
+
+	// Add to main window
+	cm.mainWindow.AddDockWidget(qt6.RightDockWidgetArea, dock)
+	dock.Show() // Ensure dock is visible
+
+	cd := &ChartDock{
+		dock:            dock,
+		chart:           chartWidget,
+		id:              cm.chartCount,
+		objectNameBytes: objNameBytes, // Keep in memory for Qt state restore
+	}
+	cm.charts = append(cm.charts, cd)
+
+	// Notify state changed (new dock added)
+	cm.notifyStateChanged()
+
+	return cd
+}
+
+// AddDefaultCharts adds 4 default charts in a 2x2 layout
+func (cm *ChartManager) AddDefaultCharts() {
+	titles := []string{"TPS", "Response Time", "Active Service", "CPU Usage"}
+
+	var firstDock, secondDock *qt6.QDockWidget
+
+	for i, title := range titles {
+		cd := cm.AddChartWithTitle(title)
+
+		if i == 0 {
+			firstDock = cd.dock
+		} else if i == 1 {
+			secondDock = cd.dock
+			// 두 번째 차트를 첫 번째 차트 아래에 배치
+			cm.mainWindow.SplitDockWidget(firstDock, secondDock, qt6.Vertical)
+		} else if i == 2 {
+			// 세 번째 차트를 첫 번째 차트 오른쪽에 배치
+			cm.mainWindow.SplitDockWidget(firstDock, cd.dock, qt6.Horizontal)
+		} else if i == 3 {
+			// 네 번째 차트를 세 번째 차트 아래에 배치
+			cm.mainWindow.SplitDockWidget(cm.charts[2].dock, cd.dock, qt6.Vertical)
+		}
+	}
+}
+
+// GetDocks returns all chart dock widgets
+func (cm *ChartManager) GetDocks() []*qt6.QDockWidget {
+	docks := make([]*qt6.QDockWidget, len(cm.charts))
+	for i, cd := range cm.charts {
+		docks[i] = cd.dock
+	}
+	return docks
+}
+
+// SetOnStateChanged sets callback for dock state changes
+func (cm *ChartManager) SetOnStateChanged(callback func()) {
+	cm.onStateChanged = callback
+}
+
+// notifyStateChanged calls the state changed callback if set
+func (cm *ChartManager) notifyStateChanged() {
+	if cm.isRestoring {
+		return // Don't save during restore
+	}
+	if cm.onStateChanged != nil {
+		cm.onStateChanged()
+	}
+}
+
+func (cm *ChartManager) SaveState() {
+	// Save chart count (actual number of charts, not chartCount which is max ID)
+	cm.appSettings.ChartCount = len(cm.charts)
+
+	// Save chart titles
+	titles := make([]string, len(cm.charts))
+	for i, cd := range cm.charts {
+		titles[i] = cd.chart.Title()
+	}
+	cm.appSettings.ChartTitles = titles
+
+	// Save window state (dock positions)
+	cm.appSettings.WindowState = cm.mainWindow.SaveState()
+
+	// Save to JSON file
+	cm.appSettings.Save()
+}
+
+// RestoreState restores chart state, returns true if window state was restored
+func (cm *ChartManager) RestoreState() bool {
+	cm.isRestoring = true
+	defer func() { cm.isRestoring = false }()
+
+	// Restore chart count from JSON settings
+	chartCount := cm.appSettings.ChartCount
+	if chartCount < 1 {
+		chartCount = 1
+	}
+
+	// Get saved titles
+	titles := cm.appSettings.ChartTitles
+
+	// Create charts with saved titles
 	for i := 0; i < chartCount; i++ {
-		cm.AddChart()
+		var title string
+		if i < len(titles) && titles[i] != "" {
+			title = titles[i]
+		}
+		cm.AddChartWithTitle(title)
 	}
 
 	// Restore window state (dock positions)
-	stateKey := qt6.NewQAnyStringView3("windowState")
-	stateValue := settings.ValueWithKey(*stateKey)
+	if len(cm.appSettings.WindowState) > 0 {
+		cm.mainWindow.RestoreState(cm.appSettings.WindowState)
 
-	if stateValue != nil && len(stateValue.ToByteArray()) > 0 {
-		cm.mainWindow.RestoreState(stateValue.ToByteArray())
+		// Ensure all chart docks are visible after restore
+		for _, cd := range cm.charts {
+			cd.dock.Show()
+		}
+		return true
 	}
+	return false
 }
 
 func main() {
 	app := qt6.NewQApplication(os.Args)
 	_ = app
 
-	// 설정 객체 생성 (global 변수에 할당)
-	settings = qt6.NewQSettings7(orgName, appName)
-
 	// 메인 윈도우 생성 (QMainWindow)
 	mainWindow := qt6.NewQMainWindow2()
-	mainWindow.SetWindowTitle("MIQT 데스크탑 앱")
+	mainWindow.SetWindowTitle(appName)
+
+	// JSON 파일에서 저장된 설정 로드
+	appSettings := settings.Load()
 
 	// 저장된 geometry 복원 시도
-	geometryKey := qt6.NewQAnyStringView3("geometry")
-	savedGeometry := settings.ValueWithKey(*geometryKey)
+	geometryRestored := false
+	if len(appSettings.Geometry) > 0 {
+		mainWindow.RestoreGeometry(appSettings.Geometry)
+		geometryRestored = true
+	}
 
-	if savedGeometry != nil && len(savedGeometry.ToByteArray()) > 0 {
-		mainWindow.RestoreGeometry(savedGeometry.ToByteArray())
-	} else {
+	if !geometryRestored {
 		screen := qt6.QGuiApplication_PrimaryScreen()
 		screenGeometry := screen.AvailableGeometry()
 
@@ -183,96 +278,64 @@ func main() {
 	}
 
 	// 창 이동/크기 변경 시 저장
-	saveGeometry := func() {
-		key := qt6.NewQAnyStringView3("geometry")
-		value := qt6.NewQVariant12(mainWindow.SaveGeometry())
-		settings.SetValue(*key, value)
-		settings.Sync()
+	saveGeometryToFile := func() {
+		appSettings.SetGeometry(mainWindow.SaveGeometry())
 	}
 
 	mainWindow.OnMoveEvent(func(super func(event *qt6.QMoveEvent), event *qt6.QMoveEvent) {
 		super(event)
-		saveGeometry()
+		saveGeometryToFile()
 	})
 
 	mainWindow.OnResizeEvent(func(super func(event *qt6.QResizeEvent), event *qt6.QResizeEvent) {
 		super(event)
-		saveGeometry()
+		saveGeometryToFile()
 	})
 
 	// Chart Manager 생성
-	chartManager := NewChartManager(mainWindow)
+	chartManager := NewChartManager(mainWindow, appSettings)
 
-	// Tree Manager 생성 (좌측 탐색기)
-	_ = NewTreeManager(mainWindow)
+	// Group Navigation View 생성 (좌측 탐색기)
+	groupNavView := groupnav.NewView(mainWindow)
+
+	// 상태 저장 함수 (복원 중에는 저장하지 않음)
+	saveWindowState := func() {
+		if !chartManager.isRestoring {
+			chartManager.SaveState()
+		}
+	}
+
+	// Chart Manager 상태 변경 콜백 설정
+	chartManager.SetOnStateChanged(saveWindowState)
+
+	// Group Navigation dock 변경 이벤트 연결
+	groupNavDock := groupNavView.Dock()
+	groupNavDock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
+		saveWindowState()
+	})
+	groupNavDock.OnTopLevelChanged(func(topLevel bool) {
+		saveWindowState()
+	})
+	groupNavDock.OnVisibilityChanged(func(visible bool) {
+		saveWindowState()
+	})
+
+	// dock 위젯을 중앙에 배치할 수 있도록 설정
+	mainWindow.SetDockNestingEnabled(true)
+
+	// 모든 dock 영역의 탭을 상단에 표시
+	mainWindow.SetTabPosition(qt6.AllDockWidgetAreas, qt6.QTabWidget__North)
 
 	// 메뉴 매니저 생성
 	_ = NewMenuManager(mainWindow, chartManager)
 
-	// 중앙 위젯 (컨트롤 패널)
-	centralWidget := qt6.NewQWidget2()
-	centralLayout := qt6.NewQVBoxLayout(centralWidget)
+	// 차트 상태 복원 먼저 시도
+	stateRestored := chartManager.RestoreState()
 
-	// 레이블 추가
-	label := qt6.NewQLabel3("환영합니다! 이것은 MIQT로 만든 Go 데스크탑 앱입니다.")
-	label.SetAlignment(qt6.AlignCenter)
-	centralLayout.AddWidget(label.QWidget)
-
-	// 텍스트 입력 필드
-	lineEdit := qt6.NewQLineEdit2()
-	lineEdit.SetPlaceholderText("여기에 텍스트를 입력하세요...")
-	centralLayout.AddWidget(lineEdit.QWidget)
-
-	// 결과 레이블
-	resultLabel := qt6.NewQLabel3("")
-	resultLabel.SetAlignment(qt6.AlignCenter)
-	centralLayout.AddWidget(resultLabel.QWidget)
-
-	// 버튼 추가
-	button := qt6.NewQPushButton3("클릭하세요!")
-	centralLayout.AddWidget(button.QWidget)
-
-	// 버튼 클릭 이벤트 연결
-	clickCount := 0
-	button.OnClicked(func() {
-		clickCount++
-		text := lineEdit.Text()
-		if text == "" {
-			resultLabel.SetText(fmt.Sprintf("버튼이 %d번 클릭되었습니다!", clickCount))
-		} else {
-			resultLabel.SetText(fmt.Sprintf("안녕하세요, %s님!", text))
-		}
-	})
-
-	// 차트 추가 버튼
-	addChartButton := qt6.NewQPushButton3("차트 추가")
-	centralLayout.AddWidget(addChartButton.QWidget)
-	addChartButton.OnClicked(func() {
-		chartManager.AddChart()
-	})
-
-	// 차트 삭제 버튼
-	removeChartButton := qt6.NewQPushButton3("마지막 차트 삭제")
-	centralLayout.AddWidget(removeChartButton.QWidget)
-	removeChartButton.OnClicked(func() {
-		chartManager.RemoveLastChart()
-	})
-
-	// 종료 버튼
-	quitButton := qt6.NewQPushButton3("종료")
-	centralLayout.AddWidget(quitButton.QWidget)
-
-	quitButton.OnClicked(func() {
-		qt6.QCoreApplication_Quit()
-	})
-
-	// Spacer
-	centralLayout.AddStretchWithStretch(1)
-
-	mainWindow.SetCentralWidget(centralWidget)
-
-	// 차트 상태 복원 (저장된 차트 개수와 배치)
-	chartManager.RestoreState()
+	// 저장된 상태가 없으면 기본 차트 4개 추가
+	if !stateRestored {
+		chartManager.AddDefaultCharts()
+	}
 
 	// 창 닫을 때 차트 상태 저장
 	mainWindow.OnCloseEvent(func(super func(event *qt6.QCloseEvent), event *qt6.QCloseEvent) {
@@ -282,6 +345,33 @@ func main() {
 
 	// 윈도우 표시
 	mainWindow.Show()
+
+	// 저장된 상태가 없으면 기본 비율 설정 (2:2:6)
+	if !stateRestored {
+		windowWidth := mainWindow.Width()
+		// 비율 2:2:6 = 총 10 파트
+		leftWidth := windowWidth * 2 / 10
+		rightWidth := windowWidth * 6 / 10
+
+		// 왼쪽 dock (Group Navigation)
+		leftDock := groupNavView.Dock()
+
+		// 오른쪽 docks (Charts)
+		rightDocks := chartManager.GetDocks()
+
+		if leftDock != nil {
+			mainWindow.ResizeDocks([]*qt6.QDockWidget{leftDock}, []int{leftWidth}, qt6.Horizontal)
+		}
+
+		if len(rightDocks) > 0 {
+			// 각 차트 dock에 동일한 너비 할당
+			sizes := make([]int, len(rightDocks))
+			for i := range sizes {
+				sizes[i] = rightWidth / len(rightDocks)
+			}
+			mainWindow.ResizeDocks(rightDocks, sizes, qt6.Horizontal)
+		}
+	}
 
 	// 이벤트 루프 실행
 	qt6.QApplication_Exec()
