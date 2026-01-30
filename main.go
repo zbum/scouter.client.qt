@@ -24,6 +24,7 @@ type ChartManager struct {
 	charts         []*ChartDock
 	groupCharts    []*views.GroupCounterView
 	xlogViews      []*xlog.View
+	eqViews        []*views.GroupEQView
 	chartCount     int
 	timer          *qt6.QTimer
 	onStateChanged func() // Callback when dock state changes
@@ -212,6 +213,26 @@ func (cm *ChartManager) AddXLogView(groupName, objType string) *xlog.View {
 	return xv
 }
 
+// AddEQView creates and tracks a group EQ view
+func (cm *ChartManager) AddEQView(groupName, objType string) *views.GroupEQView {
+	ev := views.NewGroupEQView(cm.mainWindow, groupName, objType)
+	cm.eqViews = append(cm.eqViews, ev)
+
+	dock := ev.Dock()
+	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
+		cm.notifyStateChanged()
+	})
+	dock.OnTopLevelChanged(func(topLevel bool) {
+		cm.notifyStateChanged()
+	})
+	dock.OnVisibilityChanged(func(visible bool) {
+		cm.notifyStateChanged()
+	})
+
+	cm.notifyStateChanged()
+	return ev
+}
+
 // AddDefaultCharts adds 4 default charts in a 2x2 layout
 func (cm *ChartManager) AddDefaultCharts() {
 	titles := []string{"TPS", "Response Time", "Active Service", "CPU Usage"}
@@ -302,6 +323,16 @@ func (cm *ChartManager) SaveState() {
 	}
 	cm.appSettings.XLogViews = xlogConfigs
 
+	// Save EQ views
+	var eqConfigs []settings.EQViewConfig
+	for _, ev := range cm.eqViews {
+		eqConfigs = append(eqConfigs, settings.EQViewConfig{
+			GroupName: ev.GroupName(),
+			ObjType:   ev.ObjType(),
+		})
+	}
+	cm.appSettings.EQViews = eqConfigs
+
 	// Save window state (dock positions)
 	cm.appSettings.WindowState = cm.mainWindow.SaveState()
 
@@ -343,6 +374,11 @@ func (cm *ChartManager) RestoreState() bool {
 	// Restore XLog views
 	for _, xc := range cm.appSettings.XLogViews {
 		cm.AddXLogView(xc.GroupName, xc.ObjType)
+	}
+
+	// Restore EQ views
+	for _, ec := range cm.appSettings.EQViews {
+		cm.AddEQView(ec.GroupName, ec.ObjType)
 	}
 
 	// Restore window state (dock positions and visibility)
@@ -424,6 +460,11 @@ func main() {
 	// Set group XLog callback
 	groupNavView.SetOnAddGroupXLog(func(groupName, objType string) {
 		chartManager.AddXLogView(groupName, objType)
+	})
+
+	// Set group EQ callback
+	groupNavView.SetOnAddGroupEQ(func(groupName, objType string) {
+		chartManager.AddEQView(groupName, objType)
 	})
 
 	// 상태 저장 함수 (복원 중에는 저장하지 않음)

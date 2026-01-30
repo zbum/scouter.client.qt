@@ -54,6 +54,7 @@ type View struct {
 	onRefreshRequest func()
 	onAddGroupChart  func(groupName, objType, counterName, displayName string)
 	onAddGroupXLog   func(groupName, objType string)
+	onAddGroupEQ     func(groupName, objType string)
 }
 
 // NewView creates a new Group Navigation View
@@ -335,6 +336,15 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 								v.onAddGroupXLog(groupName, objType)
 							})
 							menu.AddAction(xlogAction)
+						}
+
+						// Active Service EQ
+						if v.onAddGroupEQ != nil {
+							eqAction := qt6.NewQAction2("Active Service EQ")
+							eqAction.OnTriggered(func() {
+								v.onAddGroupEQ(groupName, objType)
+							})
+							menu.AddAction(eqAction)
 						}
 
 					case *AgentObject:
@@ -1021,6 +1031,11 @@ func (v *View) SetOnAddGroupChart(callback func(groupName, objType, counterName,
 // SetOnAddGroupXLog sets callback for adding a group XLog view
 func (v *View) SetOnAddGroupXLog(callback func(groupName, objType string)) {
 	v.onAddGroupXLog = callback
+}
+
+// SetOnAddGroupEQ sets callback for adding a group EQ view
+func (v *View) SetOnAddGroupEQ(callback func(groupName, objType string)) {
+	v.onAddGroupEQ = callback
 }
 
 // Dock returns the dock widget

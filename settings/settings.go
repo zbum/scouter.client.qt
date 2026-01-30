@@ -31,6 +31,12 @@ type ChartConfig struct {
 	Title string `json:"title"`
 }
 
+// EQViewConfig holds the configuration for a persisted EQ view
+type EQViewConfig struct {
+	GroupName string `json:"groupName"`
+	ObjType   string `json:"objType"`
+}
+
 // AppSettings holds application settings
 type AppSettings struct {
 	Geometry    []byte             `json:"geometry"`
@@ -40,6 +46,7 @@ type AppSettings struct {
 	Charts      []ChartConfig      `json:"charts,omitempty"`
 	GroupCharts []GroupChartConfig  `json:"groupCharts,omitempty"`
 	XLogViews   []XLogViewConfig   `json:"xlogViews,omitempty"`
+	EQViews     []EQViewConfig     `json:"eqViews,omitempty"`
 
 	// Navigation tree state
 	NavCollapsedItems []string `json:"navCollapsedItems,omitempty"`
