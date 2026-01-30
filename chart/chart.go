@@ -60,16 +60,35 @@ type DataPoint struct {
 	Value     int64 // milliseconds
 }
 
+// Series represents a named data series with its own color
+type Series struct {
+	Name       string
+	Color      *qt6.QColor
+	DataPoints []DataPoint
+}
+
 // Config holds chart configuration
 type Config struct {
-	MaxPoints   int   // Maximum number of points to display
-	MaxValue    int64 // Maximum Y value (milliseconds)
-	TimeRange   int   // Time range in seconds
-	Title       string
-	MinWidth    int
-	MinHeight   int
-	ShowMarkers bool // Show X markers at data points
-	ShowLines   bool // Show lines connecting data points
+	MaxPoints      int                // Maximum number of points to display
+	MaxValue       int64              // Maximum Y value (milliseconds)
+	TimeRange      int                // Time range in seconds
+	Title          string
+	MinWidth       int
+	MinHeight      int
+	ShowMarkers    bool               // Show X markers at data points
+	ShowLines      bool               // Show lines connecting data points
+	YAxisFormatter func(int64) string // Custom Y-axis label formatter (nil = default "%dms")
+}
+
+// FormatAbbreviated formats a value using abbreviated notation (1K, 2.5M)
+func FormatAbbreviated(v int64) string {
+	if v >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(v)/1_000_000)
+	}
+	if v >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(v)/1_000)
+	}
+	return fmt.Sprintf("%d", v)
 }
 
 // DefaultConfig returns default chart configuration
@@ -86,11 +105,26 @@ func DefaultConfig() Config {
 	}
 }
 
+// seriesPalette defines 8 distinct colors that work in both light and dark mode
+var seriesPalette = [][3]int{
+	{70, 130, 230},  // Blue
+	{220, 60, 60},   // Red
+	{50, 170, 80},   // Green
+	{230, 150, 30},  // Orange
+	{160, 90, 210},  // Purple
+	{30, 180, 190},  // Cyan
+	{210, 90, 160},  // Pink
+	{120, 190, 50},  // Lime
+}
+
 // Widget represents a time-series chart widget
 type Widget struct {
-	widget     *qt6.QWidget
-	dataPoints []DataPoint
-	config     Config
+	widget      *qt6.QWidget
+	dataPoints  []DataPoint    // single-series (backward compat)
+	series      map[string]*Series
+	seriesOrder []string       // insertion order for consistent rendering
+	config      Config
+	colorIndex  int            // next color from palette
 }
 
 // New creates a new chart widget with default configuration
@@ -219,6 +253,46 @@ func (c *Widget) DataPoints() []DataPoint {
 	return result
 }
 
+// AddSeries creates a named series with an auto-assigned color
+func (c *Widget) AddSeries(name string) *Series {
+	if c.series == nil {
+		c.series = make(map[string]*Series)
+	}
+	if s, ok := c.series[name]; ok {
+		return s
+	}
+	color := seriesPalette[c.colorIndex%len(seriesPalette)]
+	s := &Series{
+		Name:  name,
+		Color: qt6.NewQColor3(color[0], color[1], color[2]),
+	}
+	c.series[name] = s
+	c.seriesOrder = append(c.seriesOrder, name)
+	c.colorIndex++
+	return s
+}
+
+// AddSeriesPoint adds a data point to a named series (auto-creates if missing)
+func (c *Widget) AddSeriesPoint(name string, value int64) {
+	s := c.AddSeries(name)
+	s.DataPoints = append(s.DataPoints, DataPoint{
+		Timestamp: time.Now(),
+		Value:     value,
+	})
+	if len(s.DataPoints) > c.config.MaxPoints {
+		s.DataPoints = s.DataPoints[1:]
+	}
+	c.widget.Update()
+}
+
+// ClearAllSeries removes all series data
+func (c *Widget) ClearAllSeries() {
+	c.series = nil
+	c.seriesOrder = nil
+	c.colorIndex = 0
+	c.widget.Update()
+}
+
 func (c *Widget) paint() {
 	painter := qt6.NewQPainter2(c.widget.QPaintDevice)
 	defer painter.Delete()
@@ -298,12 +372,18 @@ func (c *Widget) paint() {
 	painter.DrawLine2(marginLeft, marginTop, marginLeft, marginTop+chartHeight)
 	painter.DrawLine2(marginLeft, marginTop+chartHeight, marginLeft+chartWidth, marginTop+chartHeight)
 
-	// Draw Y axis labels (milliseconds)
+	// Draw Y axis labels
 	painter.SetPen(theme.TextColor)
 	for i := 0; i <= 5; i++ {
 		y := marginTop + (chartHeight * i / 5)
-		msValue := c.config.MaxValue - (int64(i) * c.config.MaxValue / 5)
-		painter.DrawText3(5, y+5, fmt.Sprintf("%dms", msValue))
+		yValue := c.config.MaxValue - (int64(i) * c.config.MaxValue / 5)
+		var label string
+		if c.config.YAxisFormatter != nil {
+			label = c.config.YAxisFormatter(yValue)
+		} else {
+			label = fmt.Sprintf("%dms", yValue)
+		}
+		painter.DrawText3(5, y+5, label)
 	}
 
 	// Draw X axis labels (time) - same positions as grid lines
@@ -312,8 +392,59 @@ func (c *Widget) paint() {
 		painter.DrawText3(gl.x-20, height-5, gl.time.Format("15:04:05"))
 	}
 
-	// Draw data points
-	if len(c.dataPoints) > 1 && (c.config.ShowMarkers || c.config.ShowLines) {
+	// Draw data
+	now = time.Now()
+	timeRange := float64(c.config.TimeRange)
+
+	if len(c.seriesOrder) > 0 {
+		// Multi-series mode
+		for _, name := range c.seriesOrder {
+			s, ok := c.series[name]
+			if !ok || len(s.DataPoints) < 2 {
+				continue
+			}
+
+			pen := qt6.NewQPen3(s.Color)
+			pen.SetWidth(1)
+
+			var prevX, prevY int
+			var hasPrev bool
+
+			for _, point := range s.DataPoints {
+				secondsAgo := now.Sub(point.Timestamp).Seconds()
+				if secondsAgo > timeRange {
+					continue
+				}
+
+				xPos := marginLeft + int(float64(chartWidth)*(1.0-secondsAgo/timeRange))
+				yPos := marginTop + chartHeight - int(float64(chartHeight)*float64(point.Value)/float64(c.config.MaxValue))
+
+				if yPos < marginTop {
+					yPos = marginTop
+				}
+				if yPos > marginTop+chartHeight {
+					yPos = marginTop + chartHeight
+				}
+
+				if c.config.ShowLines && hasPrev {
+					painter.SetPenWithPen(pen)
+					painter.DrawLine2(prevX, prevY, xPos, yPos)
+				}
+
+				if c.config.ShowMarkers {
+					painter.SetPenWithPen(pen)
+					markerSize := 2
+					painter.DrawLine2(xPos-markerSize, yPos-markerSize, xPos+markerSize, yPos+markerSize)
+					painter.DrawLine2(xPos-markerSize, yPos+markerSize, xPos+markerSize, yPos-markerSize)
+				}
+
+				prevX = xPos
+				prevY = yPos
+				hasPrev = true
+			}
+		}
+	} else if len(c.dataPoints) > 1 && (c.config.ShowMarkers || c.config.ShowLines) {
+		// Single-series mode (backward compat)
 		var markerPen *qt6.QPen
 		var linePen *qt6.QPen
 
@@ -327,14 +458,10 @@ func (c *Widget) paint() {
 			linePen.SetWidth(1)
 		}
 
-		now := time.Now()
-		timeRange := float64(c.config.TimeRange)
-
 		var prevX, prevY int
 		var hasPrev bool
 
 		for _, point := range c.dataPoints {
-			// Calculate position
 			secondsAgo := now.Sub(point.Timestamp).Seconds()
 			if secondsAgo > timeRange {
 				continue
@@ -343,7 +470,6 @@ func (c *Widget) paint() {
 			xPos := marginLeft + int(float64(chartWidth)*(1.0-secondsAgo/timeRange))
 			yPos := marginTop + chartHeight - int(float64(chartHeight)*float64(point.Value)/float64(c.config.MaxValue))
 
-			// Clamp Y position
 			if yPos < marginTop {
 				yPos = marginTop
 			}
@@ -351,13 +477,11 @@ func (c *Widget) paint() {
 				yPos = marginTop + chartHeight
 			}
 
-			// Draw connecting line
 			if c.config.ShowLines && hasPrev {
 				painter.SetPenWithPen(linePen)
 				painter.DrawLine2(prevX, prevY, xPos, yPos)
 			}
 
-			// Draw X marker
 			if c.config.ShowMarkers {
 				painter.SetPenWithPen(markerPen)
 				markerSize := 2

@@ -5,6 +5,9 @@ import (
 	"sync"
 
 	"github.com/mappu/miqt/qt6"
+	"scouter.client.qt/dialogs"
+	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/server"
 )
 
 // View represents the Group Navigation View (dock widget with tabs)
@@ -29,20 +32,40 @@ type View struct {
 	timer      *qt6.QTimer
 	mu         sync.RWMutex
 
+	// Track collapsed items (by name) to prevent auto-expand
+	collapsedItems map[string]bool
+	// Flag to ignore programmatic expand/collapse
+	ignoringExpandEvents bool
+
+	// Track column width ratio (0-100) to preserve after refresh and resize
+	groupCol0Ratio      int  // percentage for first column (default 80)
+	objectCol0Ratio     int  // percentage for first column (default 80)
+	columnsInited       bool
+	lastGroupWidth      int  // last known group tree width for resize detection
+	lastObjectWidth     int  // last known object tree width for resize detection
+	ignoringResizeEvents bool // prevent ratio recalc during programmatic resize
+
+	// Cache last successful object list per server to avoid flickering on transient errors
+	cachedObjects map[int][]*pack.ObjectPack
+
 	// Callbacks
 	onGroupSelected  func(group *GroupObject)
 	onAgentSelected  func(agent *AgentObject)
 	onRefreshRequest func()
+	onAddGroupChart  func(groupName, objType, counterName, displayName string)
+	onAddGroupXLog   func(groupName, objType string)
 }
 
 // NewView creates a new Group Navigation View
 func NewView(mainWindow *qt6.QMainWindow) *View {
 	v := &View{
-		groupMap:     make(map[string]HierarchyObject),
-		groupObjMap:  make(map[int64]HierarchyObject),
-		objectMap:    make(map[string]HierarchyObject),
-		objectObjMap: make(map[int64]HierarchyObject),
-		nextItemID:   1,
+		groupMap:       make(map[string]HierarchyObject),
+		groupObjMap:    make(map[int64]HierarchyObject),
+		objectMap:      make(map[string]HierarchyObject),
+		objectObjMap:   make(map[int64]HierarchyObject),
+		collapsedItems: make(map[string]bool),
+		cachedObjects:  make(map[int][]*pack.ObjectPack),
+		nextItemID:     1,
 	}
 
 	// Create dock widget
@@ -80,11 +103,11 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 	v.groupModel.SetHorizontalHeaderLabels(groupHeaderLabels)
 	v.groupTreeView.SetModel(v.groupModel.QAbstractItemModel)
 
-	// Set proportional column widths (180:60 = 3:1 ratio)
+	// Set column widths - 80:20 ratio, user resizable, fills entire width
 	groupHeader := v.groupTreeView.Header()
 	groupHeader.SetStretchLastSection(true)
 	groupHeader.SetSectionResizeMode2(0, qt6.QHeaderView__Interactive)
-	groupHeader.ResizeSection(0, 180)
+	groupHeader.ResizeSection(0, 200) // Initial width, will be adjusted
 
 	groupLayout.AddWidget(v.groupTreeView.QWidget)
 	v.tabWidget.AddTab(groupTab, "Group")
@@ -105,11 +128,11 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 	v.objectModel.SetHorizontalHeaderLabels(objectHeaderLabels)
 	v.objectTreeView.SetModel(v.objectModel.QAbstractItemModel)
 
-	// Set proportional column widths (180:60 = 3:1 ratio)
+	// Set column widths - 80:20 ratio, user resizable, fills entire width
 	objectHeader := v.objectTreeView.Header()
 	objectHeader.SetStretchLastSection(true)
 	objectHeader.SetSectionResizeMode2(0, qt6.QHeaderView__Interactive)
-	objectHeader.ResizeSection(0, 180)
+	objectHeader.ResizeSection(0, 200) // Initial width, will be adjusted
 
 	objectLayout.AddWidget(v.objectTreeView.QWidget)
 	v.tabWidget.AddTab(objectTab, "Object")
@@ -141,8 +164,78 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 		v.handleObjectSelection(index)
 	})
 
+	// Track collapsed items in Group tab (only for user actions)
+	v.groupTreeView.OnCollapsed(func(index *qt6.QModelIndex) {
+		if v.ignoringExpandEvents {
+			return
+		}
+		item := v.groupModel.ItemFromIndex(index)
+		if item != nil {
+			v.collapsedItems[item.Text()] = true
+		}
+	})
+	v.groupTreeView.OnExpanded(func(index *qt6.QModelIndex) {
+		if v.ignoringExpandEvents {
+			return
+		}
+		item := v.groupModel.ItemFromIndex(index)
+		if item != nil {
+			delete(v.collapsedItems, item.Text())
+		}
+	})
+
+	// Track collapsed items in Object tab (only for user actions)
+	v.objectTreeView.OnCollapsed(func(index *qt6.QModelIndex) {
+		if v.ignoringExpandEvents {
+			return
+		}
+		item := v.objectModel.ItemFromIndex(index)
+		if item != nil {
+			v.collapsedItems[item.Text()] = true
+		}
+	})
+	v.objectTreeView.OnExpanded(func(index *qt6.QModelIndex) {
+		if v.ignoringExpandEvents {
+			return
+		}
+		item := v.objectModel.ItemFromIndex(index)
+		if item != nil {
+			delete(v.collapsedItems, item.Text())
+		}
+	})
+
 	// Add to main window (left side)
 	mainWindow.AddDockWidget(qt6.LeftDockWidgetArea, v.dock)
+
+	// Set initial column widths to 80:20 ratio when dock is shown
+	v.dock.OnVisibilityChanged(func(visible bool) {
+		if visible {
+			v.adjustColumnWidths()
+		}
+	})
+
+	// Adjust column widths when dock location changes
+	v.dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
+		v.adjustColumnWidths()
+	})
+
+	// Save column ratio when user manually resizes columns
+	groupHeader.OnSectionResized(func(logicalIndex int, oldSize int, newSize int) {
+		if logicalIndex == 0 && !v.ignoringExpandEvents && !v.ignoringResizeEvents {
+			groupWidth := v.groupTreeView.Width()
+			if groupWidth > 0 && newSize > 0 {
+				v.groupCol0Ratio = newSize * 100 / groupWidth
+			}
+		}
+	})
+	objectHeader.OnSectionResized(func(logicalIndex int, oldSize int, newSize int) {
+		if logicalIndex == 0 && !v.ignoringExpandEvents && !v.ignoringResizeEvents {
+			objectWidth := v.objectTreeView.Width()
+			if objectWidth > 0 && newSize > 0 {
+				v.objectCol0Ratio = newSize * 100 / objectWidth
+			}
+		}
+	})
 
 	// Setup refresh timer (3 seconds)
 	v.timer = qt6.NewQTimer()
@@ -186,6 +279,7 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 					switch o := obj.(type) {
 					case *GroupObject:
 						groupName := o.GetName()
+						objType := o.GetObjType()
 
 						// Group header
 						headerAction := qt6.NewQAction2(groupName)
@@ -206,6 +300,42 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 							v.removeGroup(groupName)
 						})
 						menu.AddAction(removeAction)
+
+						// Counter chart items
+						if v.onAddGroupChart != nil {
+							menu.AddSeparator()
+							type counterItem struct {
+								display string
+								counter string
+							}
+							counters := []counterItem{
+								{"TPS Chart", "TPS"},
+								{"Response Time Chart", "ElapsedTime"},
+								{"Active Service Chart", "ActiveService"},
+								{"CPU Chart", "Cpu"},
+								{"Memory Chart", "UsedMemory"},
+								{"GC Count Chart", "GcCount"},
+								{"GC Time Chart", "GcTime"},
+							}
+							for _, ci := range counters {
+								ci := ci // capture
+								action := qt6.NewQAction2(ci.display)
+								action.OnTriggered(func() {
+									v.onAddGroupChart(groupName, objType, ci.counter, ci.display)
+								})
+								menu.AddAction(action)
+							}
+						}
+
+						// XLog view
+						if v.onAddGroupXLog != nil {
+							menu.AddSeparator()
+							xlogAction := qt6.NewQAction2("XLog")
+							xlogAction.OnTriggered(func() {
+								v.onAddGroupXLog(groupName, objType)
+							})
+							menu.AddAction(xlogAction)
+						}
 
 					case *AgentObject:
 						objName := o.GetObjName()
@@ -303,7 +433,11 @@ func (v *View) showObjectContextMenu(pos *qt6.QPoint) {
 
 // showAddServerDialog shows dialog to add a new server
 func (v *View) showAddServerDialog() {
-	// TODO: Implement add server dialog
+	dlg := dialogs.NewServerDialog(nil)
+	dlg.SetOnResult(func(srv *server.Server) {
+		v.organizeGroups()
+	})
+	dlg.Exec()
 }
 
 // handleGroupSelection handles tree item selection in Group tab
@@ -383,6 +517,9 @@ func (v *View) handleObjectSelection(index *qt6.QModelIndex) {
 
 // refresh updates the tree view
 func (v *View) refresh() {
+	// Check if view was resized
+	v.checkAndAdjustColumnWidths()
+
 	if v.onRefreshRequest != nil {
 		v.onRefreshRequest()
 	}
@@ -418,7 +555,8 @@ func (v *View) updateGroupTree() {
 		v.addToGroupModel(obj, nil)
 	}
 
-	v.groupTreeView.ExpandAll()
+	// Expand items that are not in the collapsed set
+	v.expandItemsSelectively(v.groupTreeView, v.groupModel)
 }
 
 // updateObjectTree rebuilds the Object tab tree (must be called with lock held)
@@ -445,7 +583,44 @@ func (v *View) updateObjectTree() {
 		v.addToObjectModel(obj, nil)
 	}
 
-	v.objectTreeView.ExpandAll()
+	// Expand items that are not in the collapsed set
+	v.expandItemsSelectively(v.objectTreeView, v.objectModel)
+}
+
+// expandItemsSelectively expands or collapses each item individually based on collapsedItems
+func (v *View) expandItemsSelectively(treeView *qt6.QTreeView, model *qt6.QStandardItemModel) {
+	// Ignore expand/collapse events during programmatic changes
+	v.ignoringExpandEvents = true
+	defer func() { v.ignoringExpandEvents = false }()
+
+	// Expand or collapse each item individually (avoid ExpandAll + Collapse race)
+	rootIndex := qt6.NewQModelIndex()
+	rowCount := model.RowCount(rootIndex)
+	for i := 0; i < rowCount; i++ {
+		item := model.Item(i)
+		v.expandOrCollapseItem(treeView, model, item)
+	}
+}
+
+// expandOrCollapseItem recursively expands or collapses items based on the collapsed set
+func (v *View) expandOrCollapseItem(treeView *qt6.QTreeView, model *qt6.QStandardItemModel, item *qt6.QStandardItem) {
+	if item == nil {
+		return
+	}
+
+	index := model.IndexFromItem(item)
+	name := item.Text()
+	if v.collapsedItems[name] {
+		treeView.Collapse(index)
+	} else {
+		treeView.Expand(index)
+	}
+
+	// Process children
+	for i := 0; i < item.RowCount(); i++ {
+		child := item.Child(i)
+		v.expandOrCollapseItem(treeView, model, child)
+	}
 }
 
 // addToGroupModel adds a hierarchy object to the group model
@@ -559,6 +734,18 @@ func (v *View) organizeGroups() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	// Suppress ratio recalculation during entire rebuild
+	v.ignoringResizeEvents = true
+	defer func() { v.ignoringResizeEvents = false }()
+
+	// Suppress repaints during clear+rebuild to prevent flickering
+	v.groupTreeView.SetUpdatesEnabled(false)
+	v.objectTreeView.SetUpdatesEnabled(false)
+	defer func() {
+		v.groupTreeView.SetUpdatesEnabled(true)
+		v.objectTreeView.SetUpdatesEnabled(true)
+	}()
+
 	mgr := GetManager()
 	v.groupMap = make(map[string]HierarchyObject)
 	v.objectMap = make(map[string]HierarchyObject)
@@ -575,23 +762,136 @@ func (v *View) organizeGroups() {
 	othersGroup := NewDummyObject(OthersGroup)
 	v.groupMap[OthersGroup] = othersGroup
 
-	// 3. Create object list for Object tab
-	// For now, create a placeholder "Servers" folder
-	serversFolder := NewDummyObject("Servers")
-	v.objectMap["Servers"] = serversFolder
+	// 3. Fetch objects from connected servers for Object tab
+	v.fetchServerObjects()
 
 	// Update both trees
 	v.updateGroupTree()
 	v.updateObjectTree()
+
+	// Restore column widths after refresh
+	v.adjustColumnWidths()
+}
+
+// fetchServerObjects fetches object data from all connected servers
+func (v *View) fetchServerObjects() {
+	servers := server.GetManager().GetServers()
+
+	for _, srv := range servers {
+		// Create server folder
+		serverFolder := NewDummyObject(srv.DisplayName())
+		v.objectMap[srv.DisplayName()] = serverFolder
+
+		if !srv.IsConnected() {
+			// Add a "Not connected" indicator
+			notConnected := NewDummyObject("(Not connected)")
+			serverFolder.PutChild("(Not connected)", notConnected)
+			continue
+		}
+
+		// Fetch objects from this server
+		session := srv.Session()
+		if session == nil {
+			continue
+		}
+
+		objects, err := session.GetObjectList()
+		if err != nil || len(objects) == 0 {
+			// Use cached data on transient error to prevent flickering
+			if cached, ok := v.cachedObjects[srv.ID]; ok {
+				objects = cached
+			} else {
+				continue
+			}
+		} else {
+			v.cachedObjects[srv.ID] = objects
+		}
+
+		// Group objects by type
+		typeGroups := make(map[string]*DummyObject)
+
+		for _, obj := range objects {
+			// Get or create type group
+			typeGroup, ok := typeGroups[obj.ObjType]
+			if !ok {
+				typeGroup = NewDummyObject(obj.ObjType)
+				typeGroups[obj.ObjType] = typeGroup
+				serverFolder.PutChild(obj.ObjType, typeGroup)
+			}
+
+			// Create agent object
+			agent := NewAgentObjectFromPack(
+				obj.ObjHash,
+				obj.ObjName,
+				obj.ObjType,
+				obj.Address,
+				obj.Version,
+				obj.Alive,
+				srv.ID,
+			)
+			typeGroup.PutChild(obj.ObjName, agent)
+
+			// Also add to groups in Group tab if assigned
+			v.addAgentToGroups(agent)
+		}
+	}
+}
+
+// addAgentToGroups adds an agent to its assigned groups
+func (v *View) addAgentToGroups(agent *AgentObject) {
+	mgr := GetManager()
+	groups := mgr.GetGroupsForObject(agent.GetObjHash())
+
+	if len(groups) == 0 {
+		// Add to Others group
+		if others, ok := v.groupMap[OthersGroup]; ok {
+			others.PutChild(agent.GetObjName(), agent)
+		}
+		return
+	}
+
+	for _, groupName := range groups {
+		if group, ok := v.groupMap[groupName]; ok {
+			group.PutChild(agent.GetObjName(), agent)
+		}
+	}
 }
 
 // showAddGroupDialog shows dialog to add a new group
 func (v *View) showAddGroupDialog() {
-	dialog := NewAddGroupDialog(nil)
+	objTypes := v.getAvailableObjTypes()
+	dialog := NewAddGroupDialog(nil, objTypes)
 	dialog.SetOnResult(func(objType, groupName string) {
 		v.organizeGroups()
 	})
 	dialog.Exec()
+}
+
+// getAvailableObjTypes returns all unique object types from connected servers
+func (v *View) getAvailableObjTypes() []string {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	typeSet := make(map[string]bool)
+	for _, obj := range v.objectMap {
+		v.collectObjTypes(obj, typeSet)
+	}
+
+	types := make([]string, 0, len(typeSet))
+	for t := range typeSet {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+	return types
+}
+
+func (v *View) collectObjTypes(obj HierarchyObject, typeSet map[string]bool) {
+	if agent, ok := obj.(*AgentObject); ok {
+		typeSet[agent.GetObjType()] = true
+	}
+	for _, child := range obj.GetChildren() {
+		v.collectObjTypes(child, typeSet)
+	}
 }
 
 // showManageGroupDialog shows dialog to manage a group
@@ -618,7 +918,7 @@ func (v *View) getAllAgentsOfType(objType string) []*AgentObject {
 	defer v.mu.RUnlock()
 
 	var agents []*AgentObject
-	for _, obj := range v.groupMap {
+	for _, obj := range v.objectMap {
 		v.collectAgentsOfType(obj, objType, &agents)
 	}
 	return agents
@@ -713,9 +1013,48 @@ func (v *View) SetOnRefreshRequest(callback func()) {
 	v.onRefreshRequest = callback
 }
 
+// SetOnAddGroupChart sets callback for adding a group chart
+func (v *View) SetOnAddGroupChart(callback func(groupName, objType, counterName, displayName string)) {
+	v.onAddGroupChart = callback
+}
+
+// SetOnAddGroupXLog sets callback for adding a group XLog view
+func (v *View) SetOnAddGroupXLog(callback func(groupName, objType string)) {
+	v.onAddGroupXLog = callback
+}
+
 // Dock returns the dock widget
 func (v *View) Dock() *qt6.QDockWidget {
 	return v.dock
+}
+
+// GetCollapsedItems returns the list of collapsed tree item names
+func (v *View) GetCollapsedItems() []string {
+	items := make([]string, 0, len(v.collapsedItems))
+	for name := range v.collapsedItems {
+		items = append(items, name)
+	}
+	return items
+}
+
+// SetCollapsedItems restores the collapsed tree item names
+func (v *View) SetCollapsedItems(items []string) {
+	v.collapsedItems = make(map[string]bool, len(items))
+	for _, name := range items {
+		v.collapsedItems[name] = true
+	}
+}
+
+// GetActiveTab returns the current tab index
+func (v *View) GetActiveTab() int {
+	return v.tabWidget.CurrentIndex()
+}
+
+// SetActiveTab sets the current tab index
+func (v *View) SetActiveTab(index int) {
+	if index >= 0 && index < v.tabWidget.Count() {
+		v.tabWidget.SetCurrentIndex(index)
+	}
 }
 
 // Stop stops the refresh timer
@@ -724,3 +1063,43 @@ func (v *View) Stop() {
 		v.timer.Stop()
 	}
 }
+
+// adjustColumnWidths applies column width ratios
+func (v *View) adjustColumnWidths() {
+	if !v.columnsInited {
+		// First time: set to 80:20 ratio
+		v.groupCol0Ratio = 80
+		v.objectCol0Ratio = 80
+		v.columnsInited = true
+	}
+
+	v.ignoringResizeEvents = true
+	defer func() { v.ignoringResizeEvents = false }()
+
+	// Apply ratios based on current view width
+	groupWidth := v.groupTreeView.Width()
+	if groupWidth > 0 && v.groupCol0Ratio > 0 {
+		col0Width := groupWidth * v.groupCol0Ratio / 100
+		v.groupTreeView.Header().ResizeSection(0, col0Width)
+		v.lastGroupWidth = groupWidth
+	}
+
+	objectWidth := v.objectTreeView.Width()
+	if objectWidth > 0 && v.objectCol0Ratio > 0 {
+		col0Width := objectWidth * v.objectCol0Ratio / 100
+		v.objectTreeView.Header().ResizeSection(0, col0Width)
+		v.lastObjectWidth = objectWidth
+	}
+}
+
+// checkAndAdjustColumnWidths checks if view was resized and adjusts columns
+func (v *View) checkAndAdjustColumnWidths() {
+	groupWidth := v.groupTreeView.Width()
+	objectWidth := v.objectTreeView.Width()
+
+	// If width changed, adjust columns
+	if groupWidth != v.lastGroupWidth || objectWidth != v.lastObjectWidth {
+		v.adjustColumnWidths()
+	}
+}
+

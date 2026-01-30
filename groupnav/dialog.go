@@ -276,19 +276,19 @@ type AddGroupDialog struct {
 }
 
 // NewAddGroupDialog creates a new add group dialog
-func NewAddGroupDialog(parent *qt6.QWidget) *AddGroupDialog {
+func NewAddGroupDialog(parent *qt6.QWidget, objTypes []string) *AddGroupDialog {
 	d := &AddGroupDialog{}
 
 	d.dialog = qt6.NewQDialog(parent)
 	d.dialog.SetWindowTitle("Add Group")
 	d.dialog.SetMinimumSize2(300, 150)
 
-	d.setupUI()
+	d.setupUI(objTypes)
 
 	return d
 }
 
-func (d *AddGroupDialog) setupUI() {
+func (d *AddGroupDialog) setupUI(objTypes []string) {
 	layout := qt6.NewQVBoxLayout(d.dialog.QWidget)
 
 	// Group name
@@ -300,16 +300,13 @@ func (d *AddGroupDialog) setupUI() {
 	nameLayout.AddWidget(d.nameEdit.QWidget)
 	layout.AddLayout(nameLayout.QLayout)
 
-	// Object type
+	// Object type - dynamically populated from connected servers
 	typeLayout := qt6.NewQHBoxLayout2()
 	typeLabel := qt6.NewQLabel3("Object Type:")
 	d.typeCombo = qt6.NewQComboBox2()
-	d.typeCombo.AddItem("javaee")
-	d.typeCombo.AddItem("golang")
-	d.typeCombo.AddItem("nodejs")
-	d.typeCombo.AddItem("python")
-	d.typeCombo.AddItem("database")
-	d.typeCombo.AddItem("host")
+	for _, t := range objTypes {
+		d.typeCombo.AddItem(t)
+	}
 	typeLayout.AddWidget(typeLabel.QWidget)
 	typeLayout.AddWidget(d.typeCombo.QWidget)
 	layout.AddLayout(typeLayout.QLayout)

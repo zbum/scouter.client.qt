@@ -11,12 +11,39 @@ const (
 	configFile = "settings.json"
 )
 
+// GroupChartConfig holds the configuration for a persisted group counter chart
+type GroupChartConfig struct {
+	GroupName   string `json:"groupName"`
+	ObjType     string `json:"objType"`
+	CounterName string `json:"counterName"`
+	DisplayName string `json:"displayName"`
+}
+
+// XLogViewConfig holds the configuration for a persisted XLog view
+type XLogViewConfig struct {
+	GroupName string `json:"groupName"`
+	ObjType   string `json:"objType"`
+}
+
+// ChartConfig holds the configuration for a persisted basic chart
+type ChartConfig struct {
+	ID    int    `json:"id"`
+	Title string `json:"title"`
+}
+
 // AppSettings holds application settings
 type AppSettings struct {
-	Geometry    []byte   `json:"geometry"`
-	WindowState []byte   `json:"windowState"`
-	ChartCount  int      `json:"chartCount"`
-	ChartTitles []string `json:"chartTitles"`
+	Geometry    []byte             `json:"geometry"`
+	WindowState []byte             `json:"windowState"`
+	ChartCount  int                `json:"chartCount"`
+	ChartTitles []string           `json:"chartTitles"`
+	Charts      []ChartConfig      `json:"charts,omitempty"`
+	GroupCharts []GroupChartConfig  `json:"groupCharts,omitempty"`
+	XLogViews   []XLogViewConfig   `json:"xlogViews,omitempty"`
+
+	// Navigation tree state
+	NavCollapsedItems []string `json:"navCollapsedItems,omitempty"`
+	NavActiveTab      int      `json:"navActiveTab,omitempty"`
 }
 
 // getPath returns the settings file path

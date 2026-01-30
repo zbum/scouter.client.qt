@@ -305,6 +305,11 @@ func (m *Manager) GetObjGroups(objHash int) []string {
 	return validGroups
 }
 
+// GetGroupsForObject is an alias for GetObjGroups
+func (m *Manager) GetGroupsForObject(objHash int) []string {
+	return m.GetObjGroups(objHash)
+}
+
 // AssignGroups sets the groups for an object (replaces existing)
 func (m *Manager) AssignGroups(objHash int, groups []string) {
 	m.mu.Lock()

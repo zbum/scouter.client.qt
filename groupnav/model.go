@@ -121,12 +121,14 @@ func (g *GroupObject) GetFirstChild() HierarchyObject {
 // AgentObject represents a monitoring agent
 type AgentObject struct {
 	*BaseHierarchyObject
-	objHash      int
-	objName      string
-	objType      string
-	serverId     int
-	alive        bool
+	objHash       int
+	objName       string
+	objType       string
+	serverId      int
+	alive         bool
 	masterCounter string
+	address       string
+	version       string
 }
 
 func NewAgentObject(objHash int, objName, objType string, serverId int) *AgentObject {
@@ -137,6 +139,20 @@ func NewAgentObject(objHash int, objName, objType string, serverId int) *AgentOb
 		objType:             objType,
 		serverId:            serverId,
 		alive:               true,
+	}
+}
+
+// NewAgentObjectFromPack creates an AgentObject from ObjectPack data
+func NewAgentObjectFromPack(objHash int32, objName, objType, address, version string, alive bool, serverId int) *AgentObject {
+	return &AgentObject{
+		BaseHierarchyObject: NewBaseHierarchyObject(objName),
+		objHash:             int(objHash),
+		objName:             objName,
+		objType:             objType,
+		serverId:            serverId,
+		alive:               alive,
+		address:             address,
+		version:             version,
 	}
 }
 
@@ -170,6 +186,14 @@ func (a *AgentObject) GetMasterCounter() string {
 
 func (a *AgentObject) SetMasterCounter(value string) {
 	a.masterCounter = value
+}
+
+func (a *AgentObject) GetAddress() string {
+	return a.address
+}
+
+func (a *AgentObject) GetVersion() string {
+	return a.version
 }
 
 // DummyObject represents a folder/category (like "Others")
