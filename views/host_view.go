@@ -165,8 +165,8 @@ func (v *HostView) createHostTab(objHash int32, objName string) *HostTab {
 		MaxValue:    100,
 		TimeRange:   60,
 		Title:       "CPU Usage (%)",
-		MinWidth:    300,
-		MinHeight:   120,
+		MinWidth:    100,
+		MinHeight:   80,
 		ShowMarkers: false,
 		ShowLines:   true,
 	}
@@ -179,8 +179,8 @@ func (v *HostView) createHostTab(objHash int32, objName string) *HostTab {
 		MaxValue:    100,
 		TimeRange:   60,
 		Title:       "Memory Usage (%)",
-		MinWidth:    300,
-		MinHeight:   120,
+		MinWidth:    100,
+		MinHeight:   80,
 		ShowMarkers: false,
 		ShowLines:   true,
 	}
@@ -193,8 +193,8 @@ func (v *HostView) createHostTab(objHash int32, objName string) *HostTab {
 		MaxValue:    10000,
 		TimeRange:   60,
 		Title:       "Network I/O (KB/s)",
-		MinWidth:    300,
-		MinHeight:   120,
+		MinWidth:    100,
+		MinHeight:   80,
 		ShowMarkers: false,
 		ShowLines:   true,
 	}

@@ -2,7 +2,9 @@ package xlog
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/cache"
@@ -27,6 +29,22 @@ var (
 	colorControl = qt6.NewQColor3(200, 100, 100)   // reddish for control
 )
 
+// Column widths matching Java ProfileText.java format:
+//
+//	    p#      #          TIME         T-GAP   CPU          CONTENTS
+//	    -    [000000] 22:23:28.840        0      0  content here
+//	[000071] [000072] 22:23:28.872        0      0   indented content
+const (
+	colParent = 9  // "    -    " or "[000NNN] "
+	colIndex  = 9  // "[000NNN] "
+	colTime   = 13 // "HH:mm:ss.SSS "
+	colTGap   = 9  // "%8d "
+	colCPU    = 7  // "%6d "
+)
+
+// Total header width before content (for continuation line indent)
+const headerWidth = colParent + colIndex + colTime + colTGap + colCPU
+
 // ProfileView displays XLog profile details in a text view
 type ProfileView struct {
 	widget    *qt6.QWidget
@@ -35,8 +53,9 @@ type ProfileView struct {
 	proxy     *net.Proxy
 
 	// Current profile
-	profile *pack.XLogProfilePack
-	txID    int64
+	profile     *pack.XLogProfilePack
+	txID        int64
+	startTimeMs int64 // transaction start time (epoch ms)
 }
 
 // NewProfileView creates a new profile detail view
@@ -84,7 +103,7 @@ func (v *ProfileView) createToolbar() *qt6.QHBoxLayout {
 	refreshBtn := qt6.NewQPushButton3("Refresh")
 	refreshBtn.OnClicked(func() {
 		if v.txID != 0 {
-			v.LoadProfile(v.txID)
+			v.LoadProfileWithTime(v.txID, v.startTimeMs)
 		}
 	})
 	toolbar.AddWidget(refreshBtn.QWidget)
@@ -107,9 +126,15 @@ func (v *ProfileView) QWidget() *qt6.QWidget {
 	return v.widget
 }
 
-// LoadProfile loads and displays a profile for the given transaction ID
+// LoadProfile loads and displays a profile (without absolute time info)
 func (v *ProfileView) LoadProfile(txID int64) {
+	v.LoadProfileWithTime(txID, 0)
+}
+
+// LoadProfileWithTime loads and displays a profile with transaction start time
+func (v *ProfileView) LoadProfileWithTime(txID int64, startTimeMs int64) {
 	v.txID = txID
+	v.startTimeMs = startTimeMs
 	v.textEdit.Clear()
 
 	if v.proxy == nil {
@@ -133,7 +158,98 @@ func (v *ProfileView) LoadProfile(txID int64) {
 	v.renderProfile()
 }
 
-// renderProfile renders the profile data
+// Profile font size in points
+const profileFontSize = 12
+
+// newCharFormat creates a QTextCharFormat with the given foreground color and monospace font
+func newCharFormat(color *qt6.QColor) *qt6.QTextCharFormat {
+	f := qt6.NewQTextCharFormat()
+	f.SetForeground(qt6.NewQBrush3(color))
+	font := qt6.NewQFont2("Menlo")
+	font.SetStyleHint(qt6.QFont__Monospace)
+	font.SetPointSize(profileFontSize)
+	f.SetFont(font)
+	return f
+}
+
+// appendColored appends colored text (simple helper for single-line messages)
+func (v *ProfileView) appendColored(text string, color *qt6.QColor) {
+	cursor := v.textEdit.TextCursor()
+	f := newCharFormat(color)
+	cursor.InsertText2(text, f)
+}
+
+// getBaseStep extracts the BaseStep from a Step, or nil for summary/control steps
+func getBaseStep(step pack.Step) *pack.BaseStep {
+	switch s := step.(type) {
+	case *pack.MethodStep:
+		return &s.BaseStep
+	case *pack.Method2Step:
+		return &s.BaseStep
+	case *pack.SqlStep:
+		return &s.BaseStep
+	case *pack.SqlStep2:
+		return &s.BaseStep
+	case *pack.SqlStep3:
+		return &s.BaseStep
+	case *pack.MessageStep:
+		return &s.BaseStep
+	case *pack.HashedMessageStep:
+		return &s.BaseStep
+	case *pack.SocketStep:
+		return &s.BaseStep
+	case *pack.ApiCallStep:
+		return &s.BaseStep
+	case *pack.ApiCallStep2:
+		return &s.BaseStep
+	case *pack.ThreadSubmitStep:
+		return &s.BaseStep
+	case *pack.DispatchStep:
+		return &s.BaseStep
+	case *pack.DumpStep:
+		return &s.BaseStep
+	case *pack.ThreadCallPossibleStep:
+		return &s.BaseStep
+	case *pack.ParameterizedMessageStep:
+		return &s.BaseStep
+	default:
+		return nil
+	}
+}
+
+// stepElapsed returns the elapsed time of a step
+func stepElapsed(step pack.Step) int32 {
+	switch s := step.(type) {
+	case *pack.MethodStep:
+		return s.Elapsed
+	case *pack.Method2Step:
+		return s.Elapsed
+	case *pack.SqlStep:
+		return s.Elapsed
+	case *pack.SqlStep2:
+		return s.Elapsed
+	case *pack.SqlStep3:
+		return s.Elapsed
+	case *pack.SocketStep:
+		return s.Elapsed
+	case *pack.ApiCallStep:
+		return s.Elapsed
+	case *pack.ApiCallStep2:
+		return s.Elapsed
+	case *pack.ThreadSubmitStep:
+		return s.Elapsed
+	case *pack.DispatchStep:
+		return s.Elapsed
+	case *pack.ThreadCallPossibleStep:
+		return s.Elapsed
+	case *pack.ParameterizedMessageStep:
+		return s.Elapsed
+	default:
+		return 0
+	}
+}
+
+// renderProfile renders the profile data matching Java ProfileText.java format
 func (v *ProfileView) renderProfile() {
 	if v.profile == nil || len(v.profile.Steps) == 0 {
 		v.appendColored("No profile data", colorStep)
@@ -141,150 +257,254 @@ func (v *ProfileView) renderProfile() {
 	}
 
 	cursor := v.textEdit.TextCursor()
+	stepFmt := newCharFormat(colorStep)
+
+	// Separator line
+	separator := strings.Repeat("-", 90)
+	cursor.InsertText2(separator, stepFmt)
+	cursor.InsertText("\n")
+
+	// Column header
+	cursor.InsertText2("    p#      #          TIME         T-GAP   CPU          CONTENTS", stepFmt)
+	cursor.InsertText("\n")
+	cursor.InsertText2(separator, stepFmt)
+	cursor.InsertText("\n")
+
+	// Sort steps by index (matching Java's SortUtil.sort which uses Step.getOrder() == index)
+	sort.Slice(v.profile.Steps, func(i, j int) bool {
+		bi := getBaseStep(v.profile.Steps[i])
+		bj := getBaseStep(v.profile.Steps[j])
+		var ii, ij int32
+		if bi != nil {
+			ii = bi.Index
+		}
+		if bj != nil {
+			ij = bj.Index
+		}
+		return ii < ij
+	})
+
+	// "start transaction" marker
+	v.writeMarkerLine(cursor, 0, "start transaction")
+
+	// Build indent map and render steps
+	indent := make(map[int32]int)
+	var prevStartTime int32
 
 	for i, step := range v.profile.Steps {
-		if i > 0 {
-			cursor.InsertText("\n")
+		cursor.InsertText("\n")
+
+		bs := getBaseStep(step)
+		indentLevel := 0
+		var tgap int32
+		var cpu int32
+
+		if bs != nil {
+			// Indent level from parent-child hierarchy
+			if parentLevel, ok := indent[bs.Parent]; ok {
+				indentLevel = parentLevel + 1
+			}
+			indent[bs.Index] = indentLevel
+
+			// T-GAP: time difference from previous step
+			tgap = bs.StartTime - prevStartTime
+			cpu = bs.StartCPU
+			prevStartTime = bs.StartTime
 		}
-		v.renderStep(cursor, i+1, step)
+
+		v.renderStep(cursor, i, step, bs, indentLevel, tgap, cpu)
 	}
+
+	// "end of transaction" marker
+	cursor.InsertText("\n")
+	if len(v.profile.Steps) > 0 {
+		lastStep := v.profile.Steps[len(v.profile.Steps)-1]
+		if bs := getBaseStep(lastStep); bs != nil {
+			elapsed := stepElapsed(lastStep)
+			v.writeMarkerLine(cursor, bs.StartTime+elapsed, "end of transaction")
+		} else {
+			v.writeMarkerLine(cursor, prevStartTime, "end of transaction")
+		}
+	}
+
+	// Final separator
+	cursor.InsertText("\n")
+	cursor.InsertText2(separator, stepFmt)
 
 	// Move cursor to top
 	v.textEdit.MoveCursor(qt6.QTextCursor__Start)
 }
 
-// appendColored appends colored text (simple helper for single-line messages)
-func (v *ProfileView) appendColored(text string, color *qt6.QColor) {
-	cursor := v.textEdit.TextCursor()
-	fmt := newCharFormat(color)
-	cursor.InsertText2(text, fmt)
+// writeMarkerLine writes [******] marker line (start/end transaction)
+func (v *ProfileView) writeMarkerLine(cursor *qt6.QTextCursor, startTimeOffset int32, message string) {
+	stepFmt := newCharFormat(colorStep)
+	msgFmt := newCharFormat(colorMessage)
+
+	// 9-char empty parent column
+	cursor.InsertText2("         ", stepFmt)
+	cursor.InsertText2("[******] ", stepFmt)
+	cursor.InsertText2(v.formatAbsTime(startTimeOffset), stepFmt)
+	cursor.InsertText2(fmt.Sprintf("%8d", 0), stepFmt)
+	cursor.InsertText2(fmt.Sprintf("%6d", 0), stepFmt)
+	cursor.InsertText2("  ", stepFmt)
+	cursor.InsertText2(message+" ", msgFmt)
 }
 
-// newCharFormat creates a QTextCharFormat with the given foreground color
-func newCharFormat(color *qt6.QColor) *qt6.QTextCharFormat {
-	f := qt6.NewQTextCharFormat()
-	f.SetForeground(qt6.NewQBrush3(color))
-	return f
+// formatAbsTime formats absolute time from step's StartTime offset
+func (v *ProfileView) formatAbsTime(offsetMs int32) string {
+	if v.startTimeMs > 0 {
+		t := time.UnixMilli(v.startTimeMs + int64(offsetMs))
+		return t.Format("15:04:05.000") + " "
+	}
+	// Fallback: show relative offset
+	return fmt.Sprintf("%12d ", offsetMs)
 }
 
-// renderStep renders a single profile step
-func (v *ProfileView) renderStep(cursor *qt6.QTextCursor, stepNum int, step pack.Step) {
+// writeStepPrefix writes the parent + index columns
+// Java format: "    -    [000NNN] " for root (parent==-1), "[PARENT] [000NNN] " for child
+func (v *ProfileView) writeStepPrefix(cursor *qt6.QTextCursor, bs *pack.BaseStep, stepIdx int) {
+	stepFmt := newCharFormat(colorStep)
+
+	if bs == nil || bs.Parent == -1 {
+		// Root step: "    -    "
+		cursor.InsertText2("    -    ", stepFmt)
+	} else {
+		// Child step: "[PARENT] "
+		cursor.InsertText2(fmt.Sprintf("[%06d] ", bs.Parent), stepFmt)
+	}
+
+	// Step index: "[000NNN] "
+	if bs != nil {
+		cursor.InsertText2(fmt.Sprintf("[%06d] ", bs.Index), stepFmt)
+	} else {
+		cursor.InsertText2(fmt.Sprintf("[%06d] ", stepIdx), stepFmt)
+	}
+}
+
+// writeStepTimeColumns writes TIME, T-GAP, CPU columns
+func (v *ProfileView) writeStepTimeColumns(cursor *qt6.QTextCursor, bs *pack.BaseStep, tgap, cpu int32) {
+	stepFmt := newCharFormat(colorStep)
+
+	if bs != nil {
+		cursor.InsertText2(v.formatAbsTime(bs.StartTime), stepFmt)
+	} else {
+		cursor.InsertText2(strings.Repeat(" ", colTime), stepFmt)
+	}
+
+	cursor.InsertText2(fmt.Sprintf("%8d", tgap), stepFmt)
+	cursor.InsertText2(fmt.Sprintf("%6d", cpu), stepFmt)
+}
+
+// writeContentIndent writes the spacing before content (2 base + indent level)
+func writeContentIndent(cursor *qt6.QTextCursor, indentLevel int) {
+	stepFmt := newCharFormat(colorStep)
+	cursor.InsertText2("  "+strings.Repeat(" ", indentLevel), stepFmt)
+}
+
+// writeContinuationIndent writes a new line with proper indentation for sub-info (params, errors)
+func writeContinuationIndent(cursor *qt6.QTextCursor, indentLevel int) {
+	cursor.InsertText("\n")
+	stepFmt := newCharFormat(colorStep)
+	cursor.InsertText2(strings.Repeat(" ", headerWidth+2+indentLevel), stepFmt)
+}
+
+// renderStep renders a single profile step in Java format
+func (v *ProfileView) renderStep(cursor *qt6.QTextCursor, stepIdx int, step pack.Step, bs *pack.BaseStep, indent int, tgap, cpu int32) {
+	// Write prefix columns: parent, index, time, tgap, cpu
+	v.writeStepPrefix(cursor, bs, stepIdx)
+	v.writeStepTimeColumns(cursor, bs, tgap, cpu)
+	writeContentIndent(cursor, indent)
+
+	// Write content based on step type
 	switch s := step.(type) {
 	case *pack.MethodStep:
-		v.renderMethodStep(cursor, stepNum, s)
+		v.renderMethodContent(cursor, s, indent)
 	case *pack.Method2Step:
-		v.renderMethod2Step(cursor, stepNum, s)
+		v.renderMethod2Content(cursor, s, indent)
 	case *pack.SqlStep:
-		v.renderSqlStepWithXType(cursor, stepNum, s, 0, 0)
+		v.renderSqlContent(cursor, s, 0, 0, indent)
 	case *pack.SqlStep2:
-		v.renderSqlStepWithXType(cursor, stepNum, &s.SqlStep, s.XType, 0)
+		v.renderSqlContent(cursor, &s.SqlStep, s.XType, 0, indent)
 	case *pack.SqlStep3:
-		v.renderSqlStepWithXType(cursor, stepNum, &s.SqlStep, s.XType, s.Updated)
+		v.renderSqlContent(cursor, &s.SqlStep, s.XType, s.Updated, indent)
 	case *pack.ApiCallStep:
-		v.renderApiCallStep(cursor, stepNum, s)
+		v.renderApiCallContent(cursor, s, indent)
 	case *pack.ApiCallStep2:
-		v.renderApiCallStep(cursor, stepNum, &s.ApiCallStep)
+		v.renderApiCallContent(cursor, &s.ApiCallStep, indent)
 	case *pack.SocketStep:
-		v.renderSocketStep(cursor, stepNum, s)
+		v.renderSocketContent(cursor, s, indent)
 	case *pack.MessageStep:
-		v.renderMessageStep(cursor, stepNum, s)
+		cursor.InsertText2(s.Message, newCharFormat(colorMessage))
 	case *pack.HashedMessageStep:
-		v.renderHashedMessageStep(cursor, stepNum, s)
+		v.renderHashedMessageContent(cursor, s)
 	case *pack.MethodSum:
-		v.renderMethodSum(cursor, stepNum, s)
+		v.renderMethodSumContent(cursor, s)
 	case *pack.SqlSum:
-		v.renderSqlSum(cursor, stepNum, s)
+		v.renderSqlSumContent(cursor, s)
 	case *pack.ApiCallSum:
-		v.renderApiCallSum(cursor, stepNum, s)
+		v.renderApiCallSumContent(cursor, s)
 	case *pack.SocketSum:
-		v.renderSocketSum(cursor, stepNum, s)
+		v.renderSocketSumContent(cursor, s)
 	case *pack.ThreadSubmitStep:
-		v.renderThreadSubmitStep(cursor, stepNum, s)
+		v.renderThreadSubmitContent(cursor, s)
 	case *pack.DispatchStep:
-		v.renderDispatchStep(cursor, stepNum, s)
+		v.renderDispatchContent(cursor, s, indent)
 	case *pack.DumpStep:
-		v.renderDumpStep(cursor, stepNum, s)
+		cursor.InsertText2(fmt.Sprintf("Thread: %s [%s]", s.ThreadName, s.ThreadState), newCharFormat(colorThread))
 	case *pack.ParameterizedMessageStep:
-		v.renderParameterizedMessageStep(cursor, stepNum, s)
+		v.renderParameterizedMsgContent(cursor, s, indent)
 	case *pack.ThreadCallPossibleStep:
-		v.renderThreadCallPossibleStep(cursor, stepNum, s)
+		v.renderThreadCallContent(cursor, s)
 	case *pack.StepControl:
-		v.renderStepControl(cursor, stepNum, s)
+		cursor.InsertText2(s.Message, newCharFormat(colorControl))
 	default:
-		v.writeStepHeader(cursor, stepNum, "Unknown", 0)
 		cursor.InsertText2(fmt.Sprintf("type=%d", step.StepType()), newCharFormat(colorDefault))
 	}
 }
 
-// writeStepHeader writes the common "[stepnum] elapsed type  " prefix
-func (v *ProfileView) writeStepHeader(cursor *qt6.QTextCursor, stepNum int, typeName string, elapsedMs int32) {
-	stepFmt := newCharFormat(colorStep)
-	cursor.InsertText2(fmt.Sprintf("[%06d] ", stepNum), stepFmt)
-
-	elapsedFmt := newCharFormat(colorElapsed)
-	cursor.InsertText2(fmt.Sprintf("%6s ", formatElapsed(elapsedMs)), elapsedFmt)
-}
-
-// writeStepHeaderLong writes header with int64 elapsed (for summary steps)
-func (v *ProfileView) writeStepHeaderLong(cursor *qt6.QTextCursor, stepNum int, typeName string, elapsedMs int64) {
-	stepFmt := newCharFormat(colorStep)
-	cursor.InsertText2(fmt.Sprintf("[%06d] ", stepNum), stepFmt)
-
-	elapsedFmt := newCharFormat(colorElapsed)
-	cursor.InsertText2(fmt.Sprintf("%6s ", formatElapsedLong(elapsedMs)), elapsedFmt)
-}
-
-// writeIndentedLine writes a new indented line (for child info like errors, params)
-func (v *ProfileView) writeIndentedLine(cursor *qt6.QTextCursor) {
-	cursor.InsertText("\n")
-	cursor.InsertText2("                 ", newCharFormat(colorStep)) // 17 chars indent to align with details
-}
-
-func (v *ProfileView) renderMethodStep(cursor *qt6.QTextCursor, stepNum int, step *pack.MethodStep) {
+func (v *ProfileView) renderMethodContent(cursor *qt6.QTextCursor, step *pack.MethodStep, indent int) {
 	methodName := v.textCache.GetMethod(step.Hash)
 	if methodName == "" {
 		methodName = fmt.Sprintf("method#%d", step.Hash)
 	}
 
-	v.writeStepHeader(cursor, stepNum, "Method", step.Elapsed)
-	cursor.InsertText2(methodName, newCharFormat(colorMethod))
+	cursor.InsertText2(fmt.Sprintf("%s [%dms]", methodName, step.Elapsed), newCharFormat(colorMethod))
 }
 
-func (v *ProfileView) renderMethod2Step(cursor *qt6.QTextCursor, stepNum int, step *pack.Method2Step) {
-	v.renderMethodStep(cursor, stepNum, &step.MethodStep)
+func (v *ProfileView) renderMethod2Content(cursor *qt6.QTextCursor, step *pack.Method2Step, indent int) {
+	v.renderMethodContent(cursor, &step.MethodStep, indent)
 
 	if step.Error != 0 {
 		errorText := v.textCache.GetError(step.Error)
 		if errorText == "" {
 			errorText = fmt.Sprintf("error#%d", step.Error)
 		}
-		v.writeIndentedLine(cursor)
+		writeContinuationIndent(cursor, indent)
 		cursor.InsertText2("ERROR "+errorText, newCharFormat(colorError))
 	}
 }
 
-func (v *ProfileView) renderSqlStepWithXType(cursor *qt6.QTextCursor, stepNum int, step *pack.SqlStep, xtype byte, updated int32) {
+func (v *ProfileView) renderSqlContent(cursor *qt6.QTextCursor, step *pack.SqlStep, xtype byte, updated int32, indent int) {
 	sqlText := v.textCache.GetSQL(step.Hash)
 	if sqlText == "" {
 		sqlText = fmt.Sprintf("sql#%d", step.Hash)
 	}
 
-	v.writeStepHeader(cursor, stepNum, "SQL", step.Elapsed)
-
-	// xtype prefix
 	prefix := sqlXTypePrefix(xtype)
-	cursor.InsertText2(prefix, newCharFormat(colorStep))
-	cursor.InsertText2(formatSQL(sqlText), newCharFormat(colorSQL))
+	cursor.InsertText2(prefix+formatSQL(sqlText), newCharFormat(colorSQL))
 
-	// Param as indented line
+	// Param on continuation line
 	if step.Param != "" {
-		v.writeIndentedLine(cursor)
-		cursor.InsertText2("PARAM "+step.Param, newCharFormat(colorParam))
+		writeContinuationIndent(cursor, indent)
+		cursor.InsertText2(fmt.Sprintf("[%s] %d ms", step.Param, step.Elapsed), newCharFormat(colorParam))
+	} else {
+		writeContinuationIndent(cursor, indent)
+		cursor.InsertText2(fmt.Sprintf("[%d] %d ms", 0, step.Elapsed), newCharFormat(colorParam))
 	}
 
 	// Updated/fetch info for SqlStep3
 	if updated != 0 {
-		v.writeIndentedLine(cursor)
+		writeContinuationIndent(cursor, indent)
 		if updated == -1 {
 			cursor.InsertText2("RESULT-SET", newCharFormat(colorMessage))
 		} else if updated >= 0 {
@@ -298,12 +518,11 @@ func (v *ProfileView) renderSqlStepWithXType(cursor *qt6.QTextCursor, stepNum in
 		if errorText == "" {
 			errorText = fmt.Sprintf("error#%d", step.Error)
 		}
-		v.writeIndentedLine(cursor)
+		writeContinuationIndent(cursor, indent)
 		cursor.InsertText2("ERROR "+errorText, newCharFormat(colorError))
 	}
 }
 
-// sqlXTypePrefix returns the SQL execution type prefix
 func sqlXTypePrefix(xtype byte) string {
 	switch xtype & 0x0f {
 	case 0x01:
@@ -315,17 +534,16 @@ func sqlXTypePrefix(xtype byte) string {
 	}
 }
 
-func (v *ProfileView) renderApiCallStep(cursor *qt6.QTextCursor, stepNum int, step *pack.ApiCallStep) {
+func (v *ProfileView) renderApiCallContent(cursor *qt6.QTextCursor, step *pack.ApiCallStep, indent int) {
 	apiURL := v.textCache.GetAPICall(step.Hash)
 	if apiURL == "" {
 		apiURL = fmt.Sprintf("api#%d", step.Hash)
 	}
 
-	v.writeStepHeader(cursor, stepNum, "API", step.Elapsed)
-	cursor.InsertText2(apiURL, newCharFormat(colorAPI))
+	cursor.InsertText2(fmt.Sprintf("%s [%dms]", apiURL, step.Elapsed), newCharFormat(colorAPI))
 
 	if step.Address != "" {
-		v.writeIndentedLine(cursor)
+		writeContinuationIndent(cursor, indent)
 		cursor.InsertText2("ADDR "+step.Address, newCharFormat(colorParam))
 	}
 
@@ -334,144 +552,149 @@ func (v *ProfileView) renderApiCallStep(cursor *qt6.QTextCursor, stepNum int, st
 		if errorText == "" {
 			errorText = fmt.Sprintf("error#%d", step.Error)
 		}
-		v.writeIndentedLine(cursor)
+		writeContinuationIndent(cursor, indent)
 		cursor.InsertText2("ERROR "+errorText, newCharFormat(colorError))
 	}
 }
 
-func (v *ProfileView) renderSocketStep(cursor *qt6.QTextCursor, stepNum int, step *pack.SocketStep) {
+func (v *ProfileView) renderSocketContent(cursor *qt6.QTextCursor, step *pack.SocketStep, indent int) {
 	ipAddr := formatIPAddr(step.IPAddr)
-	v.writeStepHeader(cursor, stepNum, "Socket", step.Elapsed)
-	cursor.InsertText2(fmt.Sprintf("%s:%d", ipAddr, step.Port), newCharFormat(colorSocket))
+	cursor.InsertText2(fmt.Sprintf("%s:%d [%dms]", ipAddr, step.Port, step.Elapsed), newCharFormat(colorSocket))
 
 	if step.Error != 0 {
 		errorText := v.textCache.GetError(step.Error)
 		if errorText == "" {
 			errorText = fmt.Sprintf("error#%d", step.Error)
 		}
-		v.writeIndentedLine(cursor)
+		writeContinuationIndent(cursor, indent)
 		cursor.InsertText2("ERROR "+errorText, newCharFormat(colorError))
 	}
 }
 
-func (v *ProfileView) renderMessageStep(cursor *qt6.QTextCursor, stepNum int, step *pack.MessageStep) {
-	v.writeStepHeader(cursor, stepNum, "Msg", 0)
-	cursor.InsertText2(step.Message, newCharFormat(colorMessage))
-}
-
-func (v *ProfileView) renderHashedMessageStep(cursor *qt6.QTextCursor, stepNum int, step *pack.HashedMessageStep) {
+func (v *ProfileView) renderHashedMessageContent(cursor *qt6.QTextCursor, step *pack.HashedMessageStep) {
 	message := v.textCache.GetMessage(step.Hash)
 	if message == "" {
 		message = fmt.Sprintf("msg#%d", step.Hash)
 	}
-
-	displayText := message
-	if step.Value != 0 {
-		displayText = fmt.Sprintf("%s #%d", message, step.Value)
+	// Java format: "MESSAGE #VALUE TIME ms" (when time != -1)
+	if step.Time != -1 {
+		message = fmt.Sprintf("%s #%d %d ms", message, step.Value, step.Time)
 	}
-
-	v.writeStepHeader(cursor, stepNum, "Msg", step.Time)
-	cursor.InsertText2(displayText, newCharFormat(colorMessage))
+	cursor.InsertText2(message, newCharFormat(colorMessage))
 }
 
-func (v *ProfileView) renderMethodSum(cursor *qt6.QTextCursor, stepNum int, step *pack.MethodSum) {
+func (v *ProfileView) renderMethodSumContent(cursor *qt6.QTextCursor, step *pack.MethodSum) {
 	methodName := v.textCache.GetMethod(step.Hash)
 	if methodName == "" {
 		methodName = fmt.Sprintf("method#%d", step.Hash)
 	}
-
-	v.writeStepHeaderLong(cursor, stepNum, "MethodSum", step.Elapsed)
-	cursor.InsertText2(fmt.Sprintf("%s (x%d)", methodName, step.Count), newCharFormat(colorSum))
+	cursor.InsertText2(fmt.Sprintf("%s (x%d, %dms)", methodName, step.Count, step.Elapsed), newCharFormat(colorSum))
 }
 
-func (v *ProfileView) renderSqlSum(cursor *qt6.QTextCursor, stepNum int, step *pack.SqlSum) {
+func (v *ProfileView) renderSqlSumContent(cursor *qt6.QTextCursor, step *pack.SqlSum) {
 	sqlText := v.textCache.GetSQL(step.Hash)
 	if sqlText == "" {
 		sqlText = fmt.Sprintf("sql#%d", step.Hash)
 	}
-
-	v.writeStepHeaderLong(cursor, stepNum, "SqlSum", step.Elapsed)
-	cursor.InsertText2(fmt.Sprintf("%s (x%d)", formatSQL(sqlText), step.Count), newCharFormat(colorSum))
+	cursor.InsertText2(fmt.Sprintf("%s (x%d, %dms)", formatSQL(sqlText), step.Count, step.Elapsed), newCharFormat(colorSum))
 }
 
-func (v *ProfileView) renderApiCallSum(cursor *qt6.QTextCursor, stepNum int, step *pack.ApiCallSum) {
+func (v *ProfileView) renderApiCallSumContent(cursor *qt6.QTextCursor, step *pack.ApiCallSum) {
 	apiURL := v.textCache.GetAPICall(step.Hash)
 	if apiURL == "" {
 		apiURL = fmt.Sprintf("api#%d", step.Hash)
 	}
-
-	v.writeStepHeaderLong(cursor, stepNum, "ApiSum", step.Elapsed)
-	cursor.InsertText2(fmt.Sprintf("%s (x%d)", apiURL, step.Count), newCharFormat(colorSum))
+	cursor.InsertText2(fmt.Sprintf("%s (x%d, %dms)", apiURL, step.Count, step.Elapsed), newCharFormat(colorSum))
 }
 
-func (v *ProfileView) renderSocketSum(cursor *qt6.QTextCursor, stepNum int, step *pack.SocketSum) {
+func (v *ProfileView) renderSocketSumContent(cursor *qt6.QTextCursor, step *pack.SocketSum) {
 	ipAddr := formatIPAddr(step.IPAddr)
-
-	v.writeStepHeaderLong(cursor, stepNum, "SocketSum", step.Elapsed)
-	cursor.InsertText2(fmt.Sprintf("%s:%d (x%d)", ipAddr, step.Port, step.Count), newCharFormat(colorSum))
+	cursor.InsertText2(fmt.Sprintf("%s:%d (x%d, %dms)", ipAddr, step.Port, step.Count, step.Elapsed), newCharFormat(colorSum))
 }
 
-func (v *ProfileView) renderThreadSubmitStep(cursor *qt6.QTextCursor, stepNum int, step *pack.ThreadSubmitStep) {
+func (v *ProfileView) renderThreadSubmitContent(cursor *qt6.QTextCursor, step *pack.ThreadSubmitStep) {
 	apiURL := v.textCache.GetAPICall(step.Hash)
 	if apiURL == "" {
 		apiURL = fmt.Sprintf("thread#%d", step.Hash)
 	}
-
-	v.writeStepHeader(cursor, stepNum, "Thread", step.Elapsed)
-	cursor.InsertText2(apiURL, newCharFormat(colorThread))
+	cursor.InsertText2(fmt.Sprintf("%s [%dms]", apiURL, step.Elapsed), newCharFormat(colorThread))
 }
 
-func (v *ProfileView) renderDispatchStep(cursor *qt6.QTextCursor, stepNum int, step *pack.DispatchStep) {
+func (v *ProfileView) renderDispatchContent(cursor *qt6.QTextCursor, step *pack.DispatchStep, indent int) {
 	apiURL := v.textCache.GetAPICall(step.Hash)
 	if apiURL == "" {
 		apiURL = fmt.Sprintf("dispatch#%d", step.Hash)
 	}
-
-	v.writeStepHeader(cursor, stepNum, "Dispatch", step.Elapsed)
-	cursor.InsertText2(apiURL, newCharFormat(colorThread))
+	cursor.InsertText2(fmt.Sprintf("%s [%dms]", apiURL, step.Elapsed), newCharFormat(colorThread))
 
 	if step.Address != "" {
-		v.writeIndentedLine(cursor)
+		writeContinuationIndent(cursor, indent)
 		cursor.InsertText2("ADDR "+step.Address, newCharFormat(colorParam))
 	}
 }
 
-func (v *ProfileView) renderDumpStep(cursor *qt6.QTextCursor, stepNum int, step *pack.DumpStep) {
-	v.writeStepHeader(cursor, stepNum, "Dump", 0)
-	cursor.InsertText2(fmt.Sprintf("Thread: %s [%s]", step.ThreadName, step.ThreadState), newCharFormat(colorThread))
-}
-
-func (v *ProfileView) renderParameterizedMessageStep(cursor *qt6.QTextCursor, stepNum int, step *pack.ParameterizedMessageStep) {
-	message := v.textCache.GetMessage(step.Hash)
-	if message == "" {
-		message = fmt.Sprintf("msg#%d", step.Hash)
+func (v *ProfileView) renderParameterizedMsgContent(cursor *qt6.QTextCursor, step *pack.ParameterizedMessageStep, indent int) {
+	messageFormat := v.textCache.GetMessage(step.Hash)
+	if messageFormat == "" {
+		messageFormat = fmt.Sprintf("msg#%d", step.Hash)
 	}
 
-	v.writeStepHeader(cursor, stepNum, "ParamMsg", step.Elapsed)
-	cursor.InsertText2(message, newCharFormat(colorMessage))
+	// Substitute %s placeholders with params (split by ETX char 3), matching Java's String.format()
+	message := buildParameterizedMessage(messageFormat, step.ParamString)
 
-	if step.ParamString != "" {
-		v.writeIndentedLine(cursor)
-		cursor.InsertText2("PARAM "+step.ParamString, newCharFormat(colorParam))
+	color := parameterizedMsgColor(step.Level)
+	if step.Elapsed >= 0 {
+		cursor.InsertText2(fmt.Sprintf("%s [%d ms]", message, step.Elapsed), newCharFormat(color))
+	} else {
+		cursor.InsertText2(message, newCharFormat(color))
 	}
 }
 
-func (v *ProfileView) renderThreadCallPossibleStep(cursor *qt6.QTextCursor, stepNum int, step *pack.ThreadCallPossibleStep) {
+// buildParameterizedMessage substitutes %s placeholders in format string with params
+func buildParameterizedMessage(messageFormat string, paramString string) string {
+	if paramString == "" {
+		return messageFormat
+	}
+	// Java splits by ETX (char 3)
+	params := strings.Split(paramString, string(rune(3)))
+	if len(params) == 0 {
+		return messageFormat
+	}
+	// Replace %s placeholders sequentially (matching Java's String.format behavior)
+	result := messageFormat
+	for _, p := range params {
+		idx := strings.Index(result, "%s")
+		if idx < 0 {
+			break
+		}
+		result = result[:idx] + p + result[idx+2:]
+	}
+	return result
+}
+
+// parameterizedMsgColor returns color based on message level (DEBUG=0, INFO=1, WARN=2, ERROR=3, FATAL=4)
+func parameterizedMsgColor(level int32) *qt6.QColor {
+	switch level {
+	case 2: // WARN
+		return qt6.NewQColor3(200, 160, 50) // dark orange
+	case 3: // ERROR
+		return qt6.NewQColor3(240, 100, 100) // light red
+	case 4: // FATAL
+		return qt6.NewQColor3(240, 70, 70) // red
+	default: // DEBUG=0, INFO=1
+		return colorMessage
+	}
+}
+
+func (v *ProfileView) renderThreadCallContent(cursor *qt6.QTextCursor, step *pack.ThreadCallPossibleStep) {
 	apiURL := v.textCache.GetAPICall(step.Hash)
 	if apiURL == "" {
 		apiURL = fmt.Sprintf("thread#%d", step.Hash)
 	}
-
-	v.writeStepHeader(cursor, stepNum, "ThreadCall", step.Elapsed)
-	cursor.InsertText2(apiURL, newCharFormat(colorThread))
+	cursor.InsertText2(fmt.Sprintf("%s [%dms]", apiURL, step.Elapsed), newCharFormat(colorThread))
 }
 
-func (v *ProfileView) renderStepControl(cursor *qt6.QTextCursor, stepNum int, step *pack.StepControl) {
-	v.writeStepHeader(cursor, stepNum, "Control", 0)
-	cursor.InsertText2(step.Message, newCharFormat(colorControl))
-}
-
-// formatSQL formats SQL text with basic whitespace cleanup (no truncation for scrollable view)
+// formatSQL formats SQL text with basic whitespace cleanup
 func formatSQL(sql string) string {
 	return strings.Join(strings.Fields(sql), " ")
 }
@@ -482,12 +705,4 @@ func formatIPAddr(ip []byte) string {
 		return "0.0.0.0"
 	}
 	return fmt.Sprintf("%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3])
-}
-
-// formatElapsedLong formats elapsed time from int64 milliseconds
-func formatElapsedLong(ms int64) string {
-	if ms >= 1000 {
-		return fmt.Sprintf("%.1fs", float64(ms)/1000.0)
-	}
-	return fmt.Sprintf("%dms", ms)
 }

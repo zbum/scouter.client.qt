@@ -542,8 +542,61 @@ func (v *View) forceRefresh() {
 	v.organizeGroups()
 }
 
+// saveSelection saves the current selection path from a tree view
+func (v *View) saveSelection(treeView *qt6.QTreeView, model *qt6.QStandardItemModel) []string {
+	indexes := treeView.SelectionModel().SelectedIndexes()
+	if len(indexes) == 0 {
+		return nil
+	}
+	// Build path from selected item to root
+	idx := &indexes[0]
+	if idx.Column() != 0 {
+		idx = model.Index(idx.Row(), 0, idx.Parent())
+	}
+	var path []string
+	for idx.IsValid() {
+		path = append([]string{model.Data(idx, int(qt6.DisplayRole)).ToString()}, path...)
+		idx = idx.Parent()
+	}
+	return path
+}
+
+// restoreSelection restores the selection by path
+func (v *View) restoreSelection(treeView *qt6.QTreeView, model *qt6.QStandardItemModel, path []string) {
+	if len(path) == 0 {
+		return
+	}
+	// Start with invalid parent (root)
+	var parent *qt6.QModelIndex
+	root := qt6.NewQModelIndex()
+	parent = root
+
+	for _, name := range path {
+		found := false
+		rowCount := model.RowCount(parent)
+		for r := 0; r < rowCount; r++ {
+			idx := model.Index(r, 0, parent)
+			if model.Data(idx, int(qt6.DisplayRole)).ToString() == name {
+				parent = idx
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+	}
+	if parent.IsValid() {
+		treeView.SelectionModel().SetCurrentIndex(parent, qt6.QItemSelectionModel__ClearAndSelect|qt6.QItemSelectionModel__Rows)
+		treeView.ScrollTo(parent, qt6.QAbstractItemView__EnsureVisible)
+	}
+}
+
 // updateGroupTree rebuilds the Group tab tree (must be called with lock held)
 func (v *View) updateGroupTree() {
+	// Save current selection
+	savedPath := v.saveSelection(v.groupTreeView, v.groupModel)
+
 	// Clear object map
 	v.groupObjMap = make(map[int64]HierarchyObject)
 
@@ -568,10 +621,16 @@ func (v *View) updateGroupTree() {
 
 	// Expand items that are not in the collapsed set
 	v.expandItemsSelectively(v.groupTreeView, v.groupModel)
+
+	// Restore selection
+	v.restoreSelection(v.groupTreeView, v.groupModel, savedPath)
 }
 
 // updateObjectTree rebuilds the Object tab tree (must be called with lock held)
 func (v *View) updateObjectTree() {
+	// Save current selection
+	savedPath := v.saveSelection(v.objectTreeView, v.objectModel)
+
 	// Clear object map
 	v.objectObjMap = make(map[int64]HierarchyObject)
 
@@ -596,6 +655,9 @@ func (v *View) updateObjectTree() {
 
 	// Expand items that are not in the collapsed set
 	v.expandItemsSelectively(v.objectTreeView, v.objectModel)
+
+	// Restore selection
+	v.restoreSelection(v.objectTreeView, v.objectModel, savedPath)
 }
 
 // expandItemsSelectively expands or collapses each item individually based on collapsedItems

@@ -18,6 +18,7 @@ type GroupCounterView struct {
 	dock            *qt6.QDockWidget
 	objectNameBytes []byte
 	chart           *chart.Widget
+	id              int
 	groupName       string
 	counterName     string
 	counterDisplay  string
@@ -30,7 +31,13 @@ type GroupCounterView struct {
 
 // NewGroupCounterView creates a new group counter chart dock widget
 func NewGroupCounterView(mainWindow *qt6.QMainWindow, groupName, objType, counterName, displayName string) *GroupCounterView {
+	return NewGroupCounterViewWithID(mainWindow, 0, groupName, objType, counterName, displayName)
+}
+
+// NewGroupCounterViewWithID creates a new group counter chart dock widget with a specific ID
+func NewGroupCounterViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objType, counterName, displayName string) *GroupCounterView {
 	view := &GroupCounterView{
+		id:             id,
 		groupName:      groupName,
 		counterName:    counterName,
 		counterDisplay: displayName,
@@ -43,7 +50,7 @@ func NewGroupCounterView(mainWindow *qt6.QMainWindow, groupName, objType, counte
 
 	// Create dock widget
 	view.dock = qt6.NewQDockWidget2(title)
-	view.objectNameBytes = []byte(fmt.Sprintf("groupCounterDock_%s_%s", groupName, counterName))
+	view.objectNameBytes = []byte(fmt.Sprintf("groupCounterDock_%d_%s_%s", id, groupName, counterName))
 	objectNameView := qt6.NewQAnyStringView2(view.objectNameBytes)
 	view.dock.SetObjectName(*objectNameView)
 	view.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
@@ -98,8 +105,8 @@ func (v *GroupCounterView) setupUI(title string) {
 	config := chart.DefaultConfig()
 	config.Title = title
 	config.MaxValue = maxValue
-	config.MinWidth = 350
-	config.MinHeight = 200
+	config.MinWidth = 100
+	config.MinHeight = 80
 	config.ShowMarkers = false
 	config.YAxisFormatter = chart.FormatAbbreviated
 	config.TimeRange = 300  // 5 minutes
@@ -227,6 +234,9 @@ func (v *GroupCounterView) CounterName() string { return v.counterName }
 
 // CounterDisplay returns the display name
 func (v *GroupCounterView) CounterDisplay() string { return v.counterDisplay }
+
+// ID returns the view ID
+func (v *GroupCounterView) ID() int { return v.id }
 
 // Close closes the view and cleans up
 func (v *GroupCounterView) Close() {

@@ -12,14 +12,27 @@ import (
 
 // XLogPoint represents a single transaction in the scatter chart
 type XLogPoint struct {
-	EndTime  time.Time // Transaction end time (X-axis)
-	Elapsed  int32     // Response time in ms (Y-axis)
-	TxID     int64     // Transaction ID
-	Service  int32     // Service hash
-	ObjHash  int32     // Object hash
-	ServerID int       // Server ID (for color assignment)
-	IsError  bool      // Whether this transaction had an error
-	Selected bool      // Whether this point is selected
+	EndTime      time.Time // Transaction end time (X-axis)
+	Elapsed      int32     // Response time in ms (Y-axis)
+	TxID         int64     // Transaction ID
+	GxID         int64     // Global transaction ID
+	Service      int32     // Service hash
+	ObjHash      int32     // Object hash
+	ServerID     int       // Server ID (for color assignment)
+	IsError      bool      // Whether this transaction had an error
+	Selected     bool      // Whether this point is selected
+	CPU          int32     // CPU time (ms)
+	SQLCount     int32     // SQL call count
+	SQLTime      int32     // SQL total time (ms)
+	APICallCount int32     // API call count
+	APICallTime  int32     // API call total time (ms)
+	KBytes       int32     // Traffic KB
+	IPAddr       []byte    // Client IP address
+	Login        int32     // Login hash
+	Desc         int32     // Description hash
+	Error        int32     // Error hash
+	UserAgent    int32     // User agent hash
+	HasDump      byte      // Profile dump flag
 }
 
 // serverColorPalette defines distinct colors per server (no red - reserved for errors).
@@ -104,8 +117,8 @@ func DefaultConfig() Config {
 	return Config{
 		MaxElapsed: 5000,
 		TimeRange:  300,
-		MinWidth:   400,
-		MinHeight:  300,
+		MinWidth:   100,
+		MinHeight:  80,
 		PointSize:  4,
 	}
 }
@@ -128,7 +141,7 @@ type Chart struct {
 	timeOffset int
 
 	// Callbacks
-	onPointSelected func(txID int64)
+	onPointSelected func(point XLogPoint)
 	onRangeSelected func(points []XLogPoint)
 
 	mu           sync.RWMutex
@@ -301,7 +314,7 @@ func (c *Chart) SetTimeRange(seconds int) {
 }
 
 // SetOnPointSelected sets callback for single point selection
-func (c *Chart) SetOnPointSelected(callback func(txID int64)) {
+func (c *Chart) SetOnPointSelected(callback func(point XLogPoint)) {
 	c.onPointSelected = callback
 }
 
@@ -519,6 +532,15 @@ func (c *Chart) calcTimeGridLines(left, w int) []xlogGridLine {
 }
 
 func (c *Chart) drawAxes(painter *qt6.QPainter, theme *ThemeColors, left, top, w, h, totalHeight int) {
+	// Draw solid border around chart area
+	axisPen := qt6.NewQPen3(theme.AxisColor)
+	axisPen.SetWidth(1)
+	painter.SetPenWithPen(axisPen)
+	painter.DrawLine2(left, top, left+w, top)           // top
+	painter.DrawLine2(left, top+h, left+w, top+h)       // bottom
+	painter.DrawLine2(left, top, left, top+h)            // left
+	painter.DrawLine2(left+w, top, left+w, top+h)       // right
+
 	painter.SetPen(theme.TextColor)
 
 	// Y-axis labels
@@ -628,10 +650,11 @@ func (c *Chart) handleClick(x, y int) {
 	maxElapsed := float64(c.config.MaxElapsed)
 	timeRange := float64(c.config.TimeRange * 1000)
 
-	var closestTxID int64
+	var closestPoint *XLogPoint
 	closestDist := 100.0 // Maximum click distance squared
 
-	for _, p := range c.points {
+	for i := range c.points {
+		p := &c.points[i]
 		if p.EndTime.Before(startTime) {
 			continue
 		}
@@ -648,12 +671,12 @@ func (c *Chart) handleClick(x, y int) {
 		dist := distanceSquared(x, y, px, py)
 		if dist < closestDist {
 			closestDist = dist
-			closestTxID = p.TxID
+			closestPoint = p
 		}
 	}
 
-	if closestTxID != 0 && c.onPointSelected != nil {
-		c.onPointSelected(closestTxID)
+	if closestPoint != nil && c.onPointSelected != nil {
+		c.onPointSelected(*closestPoint)
 	}
 }
 

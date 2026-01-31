@@ -98,8 +98,8 @@ func DefaultConfig() Config {
 		MaxValue:    1000,
 		TimeRange:   60,
 		Title:       "Response Time",
-		MinWidth:    300,
-		MinHeight:   200,
+		MinWidth:    100,
+		MinHeight:   80,
 		ShowMarkers: true,
 		ShowLines:   true,
 	}

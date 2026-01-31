@@ -50,8 +50,8 @@ func newEqWidget(parent *qt6.QWidget) *eqWidget {
 	} else {
 		w.QWidget = qt6.NewQWidget2()
 	}
-	w.QWidget.SetMinimumHeight(60)
-	w.QWidget.SetMinimumWidth(200)
+	w.QWidget.SetMinimumHeight(40)
+	w.QWidget.SetMinimumWidth(100)
 
 	w.QWidget.OnPaintEvent(func(super func(event *qt6.QPaintEvent), event *qt6.QPaintEvent) {
 		w.paint()
@@ -241,24 +241,33 @@ type GroupEQView struct {
 	dock            *qt6.QDockWidget
 	objectNameBytes []byte
 	widget          *eqWidget
+	id              int
 	groupName       string
 	objType         string
 	timer           *qt6.QTimer
 	active          bool
+	lastData        map[int32]ActiveSpeedData // retain previous data until new arrives
 }
 
 // NewGroupEQView creates a new group EQ dock view
 func NewGroupEQView(mainWindow *qt6.QMainWindow, groupName, objType string) *GroupEQView {
+	return NewGroupEQViewWithID(mainWindow, 0, groupName, objType)
+}
+
+// NewGroupEQViewWithID creates a new group EQ dock view with a specific ID
+func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objType string) *GroupEQView {
 	v := &GroupEQView{
+		id:        id,
 		groupName: groupName,
 		objType:   objType,
 		active:    true,
+		lastData:  make(map[int32]ActiveSpeedData),
 	}
 
 	title := fmt.Sprintf("%s - Active Service EQ", groupName)
 
 	v.dock = qt6.NewQDockWidget2(title)
-	v.objectNameBytes = []byte(fmt.Sprintf("eqDock_%s", groupName))
+	v.objectNameBytes = []byte(fmt.Sprintf("eqDock_%d_%s", id, groupName))
 	objectNameView := qt6.NewQAnyStringView2(v.objectNameBytes)
 	v.dock.SetObjectName(*objectNameView)
 	v.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
@@ -342,15 +351,26 @@ func (v *GroupEQView) fetchAndUpdate() {
 		})
 	}
 
-	// No results - keep previous data displayed
-	if len(results) == 0 {
+	// Merge new results into lastData (keep previous for agents that didn't respond)
+	for hash, speed := range results {
+		v.lastData[hash] = speed
+	}
+
+	// Remove agents no longer in the group
+	for hash := range v.lastData {
+		if _, ok := members[int(hash)]; !ok {
+			delete(v.lastData, hash)
+		}
+	}
+
+	if len(v.lastData) == 0 {
 		return
 	}
 
-	// Build sorted display data
-	eqData := make([]EqData, 0, len(results))
+	// Build sorted display data from merged data
+	eqData := make([]EqData, 0, len(v.lastData))
 	objCache := cache.GetObjectCache()
-	for hash, speed := range results {
+	for hash, speed := range v.lastData {
 		name := objCache.GetObjName(hash)
 		if name == "" {
 			name = fmt.Sprintf("obj-%d", hash)
@@ -375,6 +395,9 @@ func (v *GroupEQView) fetchAndUpdate() {
 
 // Dock returns the underlying dock widget
 func (v *GroupEQView) Dock() *qt6.QDockWidget { return v.dock }
+
+// ID returns the view ID
+func (v *GroupEQView) ID() int { return v.id }
 
 // GroupName returns the group name
 func (v *GroupEQView) GroupName() string { return v.groupName }

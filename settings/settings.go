@@ -13,6 +13,7 @@ const (
 
 // GroupChartConfig holds the configuration for a persisted group counter chart
 type GroupChartConfig struct {
+	ID          int    `json:"id"`
 	GroupName   string `json:"groupName"`
 	ObjType     string `json:"objType"`
 	CounterName string `json:"counterName"`
@@ -21,6 +22,7 @@ type GroupChartConfig struct {
 
 // XLogViewConfig holds the configuration for a persisted XLog view
 type XLogViewConfig struct {
+	ID        int    `json:"id"`
 	GroupName string `json:"groupName"`
 	ObjType   string `json:"objType"`
 }
@@ -33,6 +35,7 @@ type ChartConfig struct {
 
 // EQViewConfig holds the configuration for a persisted EQ view
 type EQViewConfig struct {
+	ID        int    `json:"id"`
 	GroupName string `json:"groupName"`
 	ObjType   string `json:"objType"`
 }

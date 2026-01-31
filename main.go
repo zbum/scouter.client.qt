@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"scouter.client.qt/assets"
 	"scouter.client.qt/chart"
 	"scouter.client.qt/groupnav"
 	"scouter.client.qt/model"
@@ -26,6 +27,9 @@ type ChartManager struct {
 	xlogViews      []*xlog.View
 	eqViews        []*views.GroupEQView
 	chartCount     int
+	groupChartCount int
+	xlogCount      int
+	eqCount        int
 	timer          *qt6.QTimer
 	onStateChanged func() // Callback when dock state changes
 	isRestoring    bool   // Flag to prevent saving during restore
@@ -175,8 +179,16 @@ func (cm *ChartManager) addChartWithID(id int, title string) *ChartDock {
 
 // AddGroupChart creates and tracks a group counter view
 func (cm *ChartManager) AddGroupChart(groupName, objType, counterName, displayName string) *views.GroupCounterView {
-	gcv := views.NewGroupCounterView(cm.mainWindow, groupName, objType, counterName, displayName)
+	cm.groupChartCount++
+	return cm.addGroupChartWithID(cm.groupChartCount, groupName, objType, counterName, displayName)
+}
+
+func (cm *ChartManager) addGroupChartWithID(id int, groupName, objType, counterName, displayName string) *views.GroupCounterView {
+	gcv := views.NewGroupCounterViewWithID(cm.mainWindow, id, groupName, objType, counterName, displayName)
 	cm.groupCharts = append(cm.groupCharts, gcv)
+	if id > cm.groupChartCount {
+		cm.groupChartCount = id
+	}
 
 	dock := gcv.Dock()
 	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
@@ -195,8 +207,16 @@ func (cm *ChartManager) AddGroupChart(groupName, objType, counterName, displayNa
 
 // AddXLogView creates and tracks a group XLog view
 func (cm *ChartManager) AddXLogView(groupName, objType string) *xlog.View {
-	xv := xlog.NewGroupXLogView(cm.mainWindow, groupName, objType)
+	cm.xlogCount++
+	return cm.addXLogViewWithID(cm.xlogCount, groupName, objType)
+}
+
+func (cm *ChartManager) addXLogViewWithID(id int, groupName, objType string) *xlog.View {
+	xv := xlog.NewGroupXLogViewWithID(cm.mainWindow, id, groupName, objType)
 	cm.xlogViews = append(cm.xlogViews, xv)
+	if id > cm.xlogCount {
+		cm.xlogCount = id
+	}
 
 	dock := xv.Dock()
 	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
@@ -215,8 +235,16 @@ func (cm *ChartManager) AddXLogView(groupName, objType string) *xlog.View {
 
 // AddEQView creates and tracks a group EQ view
 func (cm *ChartManager) AddEQView(groupName, objType string) *views.GroupEQView {
-	ev := views.NewGroupEQView(cm.mainWindow, groupName, objType)
+	cm.eqCount++
+	return cm.addEQViewWithID(cm.eqCount, groupName, objType)
+}
+
+func (cm *ChartManager) addEQViewWithID(id int, groupName, objType string) *views.GroupEQView {
+	ev := views.NewGroupEQViewWithID(cm.mainWindow, id, groupName, objType)
 	cm.eqViews = append(cm.eqViews, ev)
+	if id > cm.eqCount {
+		cm.eqCount = id
+	}
 
 	dock := ev.Dock()
 	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
@@ -305,6 +333,7 @@ func (cm *ChartManager) SaveState() {
 	var groupConfigs []settings.GroupChartConfig
 	for _, gcv := range cm.groupCharts {
 		groupConfigs = append(groupConfigs, settings.GroupChartConfig{
+			ID:          gcv.ID(),
 			GroupName:   gcv.GroupName(),
 			ObjType:     gcv.ObjType(),
 			CounterName: gcv.CounterName(),
@@ -317,6 +346,7 @@ func (cm *ChartManager) SaveState() {
 	var xlogConfigs []settings.XLogViewConfig
 	for _, xv := range cm.xlogViews {
 		xlogConfigs = append(xlogConfigs, settings.XLogViewConfig{
+			ID:        xv.ID(),
 			GroupName: xv.GroupName(),
 			ObjType:   xv.ObjType(),
 		})
@@ -327,6 +357,7 @@ func (cm *ChartManager) SaveState() {
 	var eqConfigs []settings.EQViewConfig
 	for _, ev := range cm.eqViews {
 		eqConfigs = append(eqConfigs, settings.EQViewConfig{
+			ID:        ev.ID(),
 			GroupName: ev.GroupName(),
 			ObjType:   ev.ObjType(),
 		})
@@ -368,17 +399,17 @@ func (cm *ChartManager) RestoreState() bool {
 
 	// Restore group counter charts
 	for _, gc := range cm.appSettings.GroupCharts {
-		cm.AddGroupChart(gc.GroupName, gc.ObjType, gc.CounterName, gc.DisplayName)
+		cm.addGroupChartWithID(gc.ID, gc.GroupName, gc.ObjType, gc.CounterName, gc.DisplayName)
 	}
 
 	// Restore XLog views
 	for _, xc := range cm.appSettings.XLogViews {
-		cm.AddXLogView(xc.GroupName, xc.ObjType)
+		cm.addXLogViewWithID(xc.ID, xc.GroupName, xc.ObjType)
 	}
 
 	// Restore EQ views
 	for _, ec := range cm.appSettings.EQViews {
-		cm.AddEQView(ec.GroupName, ec.ObjType)
+		cm.addEQViewWithID(ec.ID, ec.GroupName, ec.ObjType)
 	}
 
 	// Restore window state (dock positions and visibility)
@@ -392,6 +423,12 @@ func (cm *ChartManager) RestoreState() bool {
 func main() {
 	app := qt6.NewQApplication(os.Args)
 	_ = app
+
+	// 앱 아이콘 설정
+	pixmap := qt6.NewQPixmap()
+	pixmap.LoadFromDataWithData(assets.AppIconPNG)
+	appIcon := qt6.NewQIcon2(pixmap)
+	qt6.QGuiApplication_SetWindowIcon(appIcon)
 
 	// 메인 윈도우 생성 (QMainWindow)
 	mainWindow := qt6.NewQMainWindow2()

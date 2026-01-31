@@ -22,6 +22,7 @@ type View struct {
 	dock            *qt6.QDockWidget
 	objectNameBytes []byte
 	chart           *Chart
+	id              int
 
 	// Real-time streaming control
 	timer   *qt6.QTimer
@@ -68,7 +69,13 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 
 // NewGroupXLogView creates a new XLog view for a specific group with real-time fetching
 func NewGroupXLogView(mainWindow *qt6.QMainWindow, groupName, objType string) *View {
+	return NewGroupXLogViewWithID(mainWindow, 0, groupName, objType)
+}
+
+// NewGroupXLogViewWithID creates a new XLog view with a specific ID
+func NewGroupXLogViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objType string) *View {
 	v := &View{
+		id:           id,
 		textCache:    cache.GetTextCache(),
 		groupName:    groupName,
 		objType:      objType,
@@ -77,7 +84,7 @@ func NewGroupXLogView(mainWindow *qt6.QMainWindow, groupName, objType string) *V
 	}
 
 	title := fmt.Sprintf("%s - XLog", groupName)
-	objectName := fmt.Sprintf("xlogDock_%s", groupName)
+	objectName := fmt.Sprintf("xlogDock_%d_%s", id, groupName)
 	v.initUI(mainWindow, title, objectName)
 
 	// Setup fetch timer (2s interval)
@@ -187,8 +194,8 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 
 	// Chart
 	v.chart = NewChart(nil)
-	v.chart.SetOnPointSelected(func(txID int64) {
-		v.handlePointSelected(txID)
+	v.chart.SetOnPointSelected(func(point XLogPoint) {
+		v.handlePointSelected(point)
 	})
 	v.chart.SetOnRangeSelected(func(points []XLogPoint) {
 		v.handleRangeSelected(points)
@@ -310,6 +317,11 @@ func (v *View) ObjType() string {
 	return v.objType
 }
 
+// ID returns the view ID
+func (v *View) ID() int {
+	return v.id
+}
+
 // AddXLog adds an XLog to the chart with server ID for color assignment
 func (v *View) AddXLog(xlog *pack.XLogPack, serverID int) {
 	if v.paused {
@@ -317,13 +329,26 @@ func (v *View) AddXLog(xlog *pack.XLogPack, serverID int) {
 	}
 
 	point := XLogPoint{
-		EndTime:  time.UnixMilli(xlog.EndTime),
-		Elapsed:  xlog.Elapsed,
-		TxID:     xlog.TxID,
-		Service:  xlog.Service,
-		ObjHash:  xlog.ObjHash,
-		ServerID: serverID,
-		IsError:  xlog.IsError(),
+		EndTime:      time.UnixMilli(xlog.EndTime),
+		Elapsed:      xlog.Elapsed,
+		TxID:         xlog.TxID,
+		GxID:         xlog.GxID,
+		Service:      xlog.Service,
+		ObjHash:      xlog.ObjHash,
+		ServerID:     serverID,
+		IsError:      xlog.IsError(),
+		CPU:          xlog.CPU,
+		SQLCount:     xlog.SQLCount,
+		SQLTime:      xlog.SQLTime,
+		APICallCount: xlog.APICallCount,
+		APICallTime:  xlog.APICallTime,
+		KBytes:       xlog.KBytes,
+		IPAddr:       xlog.IPAddr,
+		Login:        xlog.Login,
+		Desc:         xlog.Desc,
+		Error:        xlog.Error,
+		UserAgent:    xlog.UserAgent,
+		HasDump:      xlog.HasDump,
 	}
 	v.chart.AddPoint(point)
 }
@@ -341,8 +366,9 @@ func (v *View) Close() {
 	v.dock.Close()
 }
 
-func (v *View) handlePointSelected(txID int64) {
-	v.showProfileDialog(txID)
+func (v *View) handlePointSelected(point XLogPoint) {
+	startTimeMs := point.EndTime.UnixMilli() - int64(point.Elapsed)
+	v.showProfileDialog(point.TxID, startTimeMs)
 }
 
 func (v *View) handleRangeSelected(points []XLogPoint) {
@@ -355,59 +381,152 @@ func (v *View) handleRangeSelected(points []XLogPoint) {
 func (v *View) showTransactionListDialog(points []XLogPoint) {
 	dialog := qt6.NewQDialog2()
 	dialog.SetWindowTitle(fmt.Sprintf("Selected Transactions (%d)", len(points)))
-	dialog.Resize(700, 400)
+	dialog.Resize(1100, 500)
 
 	layout := qt6.NewQVBoxLayout(dialog.QWidget)
 
-	// Create table
+	// Columns matching Java client's default visible columns
+	headers := []string{
+		"Object", "Elapsed", "Service", "StartTime", "EndTime",
+		"CPU", "SQL Count", "SQL Time", "API Count", "API Time",
+		"KBytes", "IP", "Login", "Desc", "Error",
+		"Dump", "Txid", "Gxid",
+	}
+
 	table := qt6.NewQTableWidget2()
-	table.SetColumnCount(4)
-	table.SetHorizontalHeaderLabels([]string{"Service", "Elapsed", "Object", "Error"})
+	table.SetColumnCount(len(headers))
+	table.SetHorizontalHeaderLabels(headers)
 	table.SetRowCount(len(points))
 	table.SetSelectionBehavior(qt6.QAbstractItemView__SelectRows)
 	table.SetEditTriggers(qt6.QAbstractItemView__NoEditTriggers)
 	table.SetAlternatingRowColors(true)
+	table.SetSortingEnabled(true)
 
 	objCache := cache.GetObjectCache()
 
+	// Error row color
+	errorColor := qt6.NewQColor3(220, 50, 50)
+
 	for i, p := range points {
-		// Service name
-		serviceName := v.textCache.GetService(p.Service)
-		if serviceName == "" {
-			serviceName = fmt.Sprintf("service#%d", p.Service)
+		col := 0
+		setItem := func(text string) {
+			item := qt6.NewQTableWidgetItem2(text)
+			if p.IsError {
+				item.SetForeground(qt6.NewQBrush3(errorColor))
+			}
+			table.SetItem(i, col, item)
+			col++
 		}
-		table.SetItem(i, 0, qt6.NewQTableWidgetItem2(serviceName))
+		setNumItem := func(text string) {
+			item := qt6.NewQTableWidgetItem2(text)
+			item.SetTextAlignment(int(qt6.AlignRight | qt6.AlignVCenter))
+			if p.IsError {
+				item.SetForeground(qt6.NewQBrush3(errorColor))
+			}
+			table.SetItem(i, col, item)
+			col++
+		}
 
-		// Elapsed
-		table.SetItem(i, 1, qt6.NewQTableWidgetItem2(fmt.Sprintf("%d ms", p.Elapsed)))
-
-		// Object name
+		// Object
 		objName := objCache.GetObjName(p.ObjHash)
 		if objName == "" {
 			objName = fmt.Sprintf("obj#%d", p.ObjHash)
 		}
-		table.SetItem(i, 2, qt6.NewQTableWidgetItem2(objName))
+		setItem(objName)
+
+		// Elapsed
+		setNumItem(fmt.Sprintf("%d", p.Elapsed))
+
+		// Service
+		serviceName := v.textCache.GetService(p.Service)
+		if serviceName == "" {
+			serviceName = fmt.Sprintf("service#%d", p.Service)
+		}
+		setItem(serviceName)
+
+		// StartTime (EndTime - Elapsed)
+		startTime := p.EndTime.Add(-time.Duration(p.Elapsed) * time.Millisecond)
+		setItem(startTime.Format("15:04:05.000"))
+
+		// EndTime
+		setItem(p.EndTime.Format("15:04:05.000"))
+
+		// CPU
+		setNumItem(fmt.Sprintf("%d", p.CPU))
+
+		// SQL Count
+		setNumItem(fmt.Sprintf("%d", p.SQLCount))
+
+		// SQL Time
+		setNumItem(fmt.Sprintf("%d", p.SQLTime))
+
+		// API Count
+		setNumItem(fmt.Sprintf("%d", p.APICallCount))
+
+		// API Time
+		setNumItem(fmt.Sprintf("%d", p.APICallTime))
+
+		// KBytes
+		setNumItem(fmt.Sprintf("%d", p.KBytes))
+
+		// IP
+		setItem(formatIPAddr(p.IPAddr))
+
+		// Login
+		loginText := ""
+		if p.Login != 0 {
+			loginText = v.textCache.GetLogin(p.Login)
+		}
+		setItem(loginText)
+
+		// Desc
+		descText := ""
+		if p.Desc != 0 {
+			descText = v.textCache.GetDesc(p.Desc)
+		}
+		setItem(descText)
 
 		// Error
 		errorText := ""
-		if p.IsError {
-			errorText = "Error"
+		if p.Error != 0 {
+			errorText = v.textCache.GetError(p.Error)
+			if errorText == "" {
+				errorText = "Error"
+			}
 		}
-		table.SetItem(i, 3, qt6.NewQTableWidgetItem2(errorText))
+		setItem(errorText)
+
+		// Dump
+		dumpText := ""
+		if p.HasDump != 0 {
+			dumpText = "Y"
+		}
+		setItem(dumpText)
+
+		// Txid
+		setItem(protocol.Hexa32ToString32(p.TxID))
+
+		// Gxid
+		gxidText := ""
+		if p.GxID != 0 {
+			gxidText = protocol.Hexa32ToString32(p.GxID)
+		}
+		setItem(gxidText)
 	}
 
 	// Resize columns to contents
+	table.ResizeColumnsToContents()
 	header := table.HorizontalHeader()
 	header.SetStretchLastSection(true)
-	table.ResizeColumnsToContents()
 
 	layout.AddWidget(table.QWidget)
 
 	// Double-click to open profile
 	table.OnCellDoubleClicked(func(row int, column int) {
 		if row >= 0 && row < len(points) {
-			txID := points[row].TxID
-			v.showProfileDialog(txID)
+			p := points[row]
+			startTimeMs := p.EndTime.UnixMilli() - int64(p.Elapsed)
+			v.showProfileDialog(p.TxID, startTimeMs)
 		}
 	})
 
@@ -415,7 +534,7 @@ func (v *View) showTransactionListDialog(points []XLogPoint) {
 }
 
 // showProfileDialog opens a profile dialog for the given transaction
-func (v *View) showProfileDialog(txID int64) {
+func (v *View) showProfileDialog(txID int64, startTimeMs int64) {
 	// Find a connected server proxy for profile fetching
 	var proxy *net.Proxy
 	servers := server.GetManager().GetConnectedServers()
@@ -441,7 +560,7 @@ func (v *View) showProfileDialog(txID int64) {
 	layout.AddWidget(profileView.QWidget())
 
 	// Load profile before showing dialog
-	profileView.LoadProfile(txID)
+	profileView.LoadProfileWithTime(txID, startTimeMs)
 
 	dialog.Exec()
 }
