@@ -23,6 +23,7 @@ func NewMenuManager(mainWindow *qt6.QMainWindow, chartManager *ChartManager) *Me
 	mainWindow.SetMenuBar(mm.menuBar)
 	mm.setupServerMenu()
 	mm.setupChartMenu()
+	mm.setupHelpMenu()
 
 	return mm
 }
@@ -50,17 +51,27 @@ func (mm *MenuManager) setupServerMenu() {
 
 // setupChartMenu creates the Chart menu
 func (mm *MenuManager) setupChartMenu() {
-	chartMenu := mm.menuBar.AddMenuWithTitle("Chart")
+	chartMenu := mm.menuBar.AddMenuWithTitle("View")
 
 	// Add Chart action
-	addChartAction := chartMenu.AddActionWithText("Add Chart")
+	addChartAction := chartMenu.AddActionWithText("Add")
 	addChartAction.OnTriggered(func() {
 		mm.chartManager.AddChart()
 	})
 
 	// Remove Last Chart action
-	removeChartAction := chartMenu.AddActionWithText("Remove Last Chart")
+	removeChartAction := chartMenu.AddActionWithText("Remove Last")
 	removeChartAction.OnTriggered(func() {
 		mm.chartManager.RemoveLastChart()
+	})
+}
+
+// setupHelpMenu creates the Help menu
+func (mm *MenuManager) setupHelpMenu() {
+	helpMenu := mm.menuBar.AddMenuWithTitle("Help")
+
+	aboutAction := helpMenu.AddActionWithText("About Scouter")
+	aboutAction.OnTriggered(func() {
+		dialogs.ShowAboutDialog(mm.mainWindow.QWidget)
 	})
 }

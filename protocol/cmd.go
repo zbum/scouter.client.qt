@@ -56,8 +56,8 @@ const (
 	CMD_TRANX_REAL_TIME_GROUP     = "TRANX_REAL_TIME_GROUP"
 
 	// Profile commands
-	CMD_XLOG_PROFILE              = "XLOG_PROFILE"
-	CMD_XLOG_PROFILE_FULL         = "XLOG_PROFILE_FULL"
+	CMD_XLOG_PROFILE              = "TRANX_PROFILE"
+	CMD_XLOG_PROFILE_FULL         = "TRANX_PROFILE_FULL"
 
 	// Text commands
 	CMD_GET_TEXT                  = "GET_TEXT"

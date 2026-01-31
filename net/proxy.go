@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"scouter.client.qt/protocol"
+	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
 )
 
@@ -293,18 +294,22 @@ func (p *Proxy) GetPerfCounter(objHash int32, counter string) (*pack.PerfCounter
 	return nil, fmt.Errorf("not implemented")
 }
 
-// GetText retrieves text by hash
+// GetText retrieves text by hash.
+// The server expects "hash" as a ListValue and returns a MapPack
+// with Hexa32-encoded hash keys.
 func (p *Proxy) GetText(textType string, hash int32) (string, error) {
 	param := pack.NewMapPack()
 	param.PutText(protocol.ParamTextType, textType)
-	param.PutDecimal(protocol.ParamHashValue, hash)
+	hashList := &io.ListValue{}
+	hashList.Add(io.NewDecimalValue(hash))
+	param.Put(protocol.ParamHashValue, hashList)
 
 	resp, err := p.Request(protocol.CMD_GET_TEXT, param)
 	if err != nil {
 		return "", err
 	}
 
-	return resp.GetText("text"), nil
+	return resp.GetText(protocol.Hexa32ToString32(int64(hash))), nil
 }
 
 // GetXLogByTxID retrieves XLog by transaction ID

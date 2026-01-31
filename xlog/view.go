@@ -23,10 +23,6 @@ type View struct {
 	objectNameBytes []byte
 	chart           *Chart
 
-	// Info panel
-	infoLabel  *qt6.QLabel
-	profileBtn *qt6.QPushButton
-
 	// Real-time streaming control
 	timer   *qt6.QTimer
 	paused  bool
@@ -47,11 +43,6 @@ type View struct {
 	// Text cache for resolving hashes
 	textCache *cache.TextCache
 
-	// Last selected txID for profile
-	lastSelectedTxID int64
-
-	// Callbacks
-	onXLogSelected func(xlog *pack.XLogPack)
 }
 
 // NewView creates a new XLog view (standalone, no group context)
@@ -183,7 +174,7 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 
 	rangeCombo := qt6.NewQComboBox2()
 	rangeCombo.AddItems([]string{"30s", "1m", "3m", "5m", "10m"})
-	rangeCombo.SetCurrentIndex(1) // 1m default
+	rangeCombo.SetCurrentIndex(3) // 5m default
 	rangeCombo.OnCurrentIndexChanged(func(index int) {
 		rangeValues := []int{30, 60, 180, 300, 600}
 		if index >= 0 && index < len(rangeValues) {
@@ -199,30 +190,10 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 	v.chart.SetOnPointSelected(func(txID int64) {
 		v.handlePointSelected(txID)
 	})
-	v.chart.SetOnRangeSelected(func(txIDs []int64) {
-		v.handleRangeSelected(txIDs)
+	v.chart.SetOnRangeSelected(func(points []XLogPoint) {
+		v.handleRangeSelected(points)
 	})
 	layout.AddWidget(v.chart.QWidget())
-
-	// Info panel with profile button
-	infoBar := qt6.NewQHBoxLayout2()
-
-	v.infoLabel = qt6.NewQLabel2()
-	v.infoLabel.SetWordWrap(true)
-	v.infoLabel.SetMinimumHeight(40)
-	v.infoLabel.SetStyleSheet("background-color: #f0f0f0; padding: 4px; border: 1px solid #ccc;")
-	infoBar.AddWidget(v.infoLabel.QWidget)
-
-	v.profileBtn = qt6.NewQPushButton3("Profile")
-	v.profileBtn.SetEnabled(false)
-	v.profileBtn.OnClicked(func() {
-		if v.lastSelectedTxID != 0 {
-			v.showProfileDialog(v.lastSelectedTxID)
-		}
-	})
-	infoBar.AddWidget(v.profileBtn.QWidget)
-
-	layout.AddLayout(infoBar.QLayout)
 
 	v.dock.SetWidget(container)
 
@@ -308,7 +279,7 @@ func (v *View) fetchAndUpdate() {
 					v.paramsMu.Unlock()
 
 				case *pack.XLogPack:
-					v.AddXLog(pk)
+					v.AddXLog(pk, srv.id)
 				}
 				return true
 			})
@@ -339,27 +310,24 @@ func (v *View) ObjType() string {
 	return v.objType
 }
 
-// AddXLog adds an XLog to the chart
-func (v *View) AddXLog(xlog *pack.XLogPack) {
+// AddXLog adds an XLog to the chart with server ID for color assignment
+func (v *View) AddXLog(xlog *pack.XLogPack, serverID int) {
 	if v.paused {
 		return
 	}
 
 	point := XLogPoint{
-		EndTime: time.UnixMilli(xlog.EndTime),
-		Elapsed: xlog.Elapsed,
-		TxID:    xlog.TxID,
-		Service: xlog.Service,
-		ObjHash: xlog.ObjHash,
-		IsError: xlog.IsError(),
+		EndTime:  time.UnixMilli(xlog.EndTime),
+		Elapsed:  xlog.Elapsed,
+		TxID:     xlog.TxID,
+		Service:  xlog.Service,
+		ObjHash:  xlog.ObjHash,
+		ServerID: serverID,
+		IsError:  xlog.IsError(),
 	}
 	v.chart.AddPoint(point)
 }
 
-// SetOnXLogSelected sets callback for XLog selection
-func (v *View) SetOnXLogSelected(callback func(xlog *pack.XLogPack)) {
-	v.onXLogSelected = callback
-}
 
 // Close stops timers and cleans up
 func (v *View) Close() {
@@ -374,57 +342,76 @@ func (v *View) Close() {
 }
 
 func (v *View) handlePointSelected(txID int64) {
-	v.lastSelectedTxID = txID
-	v.profileBtn.SetEnabled(true)
-
-	// Try to fetch full XLog info from any connected server
-	info := "TxID: " + formatInt64Hex(txID)
-
-	servers := server.GetManager().GetConnectedServers()
-	for _, srv := range servers {
-		session := srv.Session()
-		if session == nil {
-			continue
-		}
-		proxy := session.Proxy()
-		if proxy == nil {
-			continue
-		}
-
-		xlogPack, err := proxy.GetXLogByTxID(txID)
-		if err != nil || xlogPack == nil {
-			continue
-		}
-
-		// Resolve service name
-		serviceName := v.textCache.GetService(xlogPack.Service)
-		if serviceName == "" {
-			serviceName = fmt.Sprintf("service#%d", xlogPack.Service)
-		}
-
-		// Resolve object name
-		objName := cache.GetObjectCache().GetObjName(xlogPack.ObjHash)
-		if objName == "" {
-			objName = fmt.Sprintf("obj#%d", xlogPack.ObjHash)
-		}
-
-		info = fmt.Sprintf("TxID: %s | Service: %s | Elapsed: %dms | Object: %s",
-			formatInt64Hex(txID), serviceName, xlogPack.Elapsed, objName)
-
-		if v.onXLogSelected != nil {
-			v.onXLogSelected(xlogPack)
-		}
-		break
-	}
-
-	v.infoLabel.SetText(info)
+	v.showProfileDialog(txID)
 }
 
-func (v *View) handleRangeSelected(txIDs []int64) {
-	v.lastSelectedTxID = 0
-	v.profileBtn.SetEnabled(false)
-	count := len(txIDs)
-	v.infoLabel.SetText(formatInt(count) + " transactions selected")
+func (v *View) handleRangeSelected(points []XLogPoint) {
+	if len(points) > 0 {
+		v.showTransactionListDialog(points)
+	}
+}
+
+// showTransactionListDialog shows a dialog with the selected transactions
+func (v *View) showTransactionListDialog(points []XLogPoint) {
+	dialog := qt6.NewQDialog2()
+	dialog.SetWindowTitle(fmt.Sprintf("Selected Transactions (%d)", len(points)))
+	dialog.Resize(700, 400)
+
+	layout := qt6.NewQVBoxLayout(dialog.QWidget)
+
+	// Create table
+	table := qt6.NewQTableWidget2()
+	table.SetColumnCount(4)
+	table.SetHorizontalHeaderLabels([]string{"Service", "Elapsed", "Object", "Error"})
+	table.SetRowCount(len(points))
+	table.SetSelectionBehavior(qt6.QAbstractItemView__SelectRows)
+	table.SetEditTriggers(qt6.QAbstractItemView__NoEditTriggers)
+	table.SetAlternatingRowColors(true)
+
+	objCache := cache.GetObjectCache()
+
+	for i, p := range points {
+		// Service name
+		serviceName := v.textCache.GetService(p.Service)
+		if serviceName == "" {
+			serviceName = fmt.Sprintf("service#%d", p.Service)
+		}
+		table.SetItem(i, 0, qt6.NewQTableWidgetItem2(serviceName))
+
+		// Elapsed
+		table.SetItem(i, 1, qt6.NewQTableWidgetItem2(fmt.Sprintf("%d ms", p.Elapsed)))
+
+		// Object name
+		objName := objCache.GetObjName(p.ObjHash)
+		if objName == "" {
+			objName = fmt.Sprintf("obj#%d", p.ObjHash)
+		}
+		table.SetItem(i, 2, qt6.NewQTableWidgetItem2(objName))
+
+		// Error
+		errorText := ""
+		if p.IsError {
+			errorText = "Error"
+		}
+		table.SetItem(i, 3, qt6.NewQTableWidgetItem2(errorText))
+	}
+
+	// Resize columns to contents
+	header := table.HorizontalHeader()
+	header.SetStretchLastSection(true)
+	table.ResizeColumnsToContents()
+
+	layout.AddWidget(table.QWidget)
+
+	// Double-click to open profile
+	table.OnCellDoubleClicked(func(row int, column int) {
+		if row >= 0 && row < len(points) {
+			txID := points[row].TxID
+			v.showProfileDialog(txID)
+		}
+	})
+
+	dialog.Show()
 }
 
 // showProfileDialog opens a profile dialog for the given transaction
@@ -453,10 +440,10 @@ func (v *View) showProfileDialog(txID int64) {
 	profileView := NewProfileView(nil, proxy)
 	layout.AddWidget(profileView.QWidget())
 
-	dialog.Show()
-
-	// Load profile
+	// Load profile before showing dialog
 	profileView.LoadProfile(txID)
+
+	dialog.Exec()
 }
 
 func formatInt64Hex(v int64) string {
@@ -476,21 +463,3 @@ func formatHex(v uint64) string {
 	return string(result)
 }
 
-func formatInt(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	result := make([]byte, 0, 10)
-	neg := v < 0
-	if neg {
-		v = -v
-	}
-	for v > 0 {
-		result = append([]byte{byte('0' + v%10)}, result...)
-		v /= 10
-	}
-	if neg {
-		result = append([]byte{'-'}, result...)
-	}
-	return string(result)
-}

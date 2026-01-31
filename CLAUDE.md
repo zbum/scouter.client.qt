@@ -15,3 +15,7 @@ always refer to the Java source at `/Users/nhn/projects/scouter` as the authorit
 - When field order, data types, or serialization format is unclear, read the corresponding Java class to verify.
 - Pack types that use blob wrapping (e.g., `XLogPack`) must match the Java `write()`/`read()` pattern exactly.
 - Use `d.available() > 0` style optional field checks (Go: `d.Remaining() > 0`) to match Java's versioned field reading.
+
+## Build & Run
+- Always use `make` (Makefile) to build and run this project. Do NOT use `go run .` or `go build` directly.
+- The Makefile handles required CGo flags (e.g., `CGO_CXXFLAGS="-std=c++17"`) for Qt6 compilation.

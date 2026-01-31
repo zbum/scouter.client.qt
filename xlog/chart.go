@@ -17,8 +17,32 @@ type XLogPoint struct {
 	TxID     int64     // Transaction ID
 	Service  int32     // Service hash
 	ObjHash  int32     // Object hash
+	ServerID int       // Server ID (for color assignment)
 	IsError  bool      // Whether this transaction had an error
 	Selected bool      // Whether this point is selected
+}
+
+// serverColorPalette defines distinct colors per server (no red - reserved for errors).
+// Dark mode and light mode share the same palette; they are vivid enough for both.
+var serverColorPalette = [][3]int{
+	{100, 200, 255}, // blue
+	{80, 200, 120},  // green
+	{180, 140, 255}, // purple
+	{255, 180, 60},  // orange
+	{0, 200, 200},   // cyan
+	{200, 160, 100}, // brown
+	{160, 220, 80},  // lime
+	{255, 130, 200}, // pink
+}
+
+// getServerColor returns a QColor for the given server ID (never red).
+func getServerColor(serverID int) *qt6.QColor {
+	idx := serverID % len(serverColorPalette)
+	if idx < 0 {
+		idx += len(serverColorPalette)
+	}
+	c := serverColorPalette[idx]
+	return qt6.NewQColor3(c[0], c[1], c[2])
 }
 
 // ThemeColors holds colors for the XLog chart
@@ -79,7 +103,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		MaxElapsed: 5000,
-		TimeRange:  60,
+		TimeRange:  300,
 		MinWidth:   400,
 		MinHeight:  300,
 		PointSize:  4,
@@ -100,9 +124,12 @@ type Chart struct {
 	selectEndY    int
 	selectedTxIDs map[int64]bool
 
+	// X-axis time offset (seconds, positive = looking at past)
+	timeOffset int
+
 	// Callbacks
 	onPointSelected func(txID int64)
-	onRangeSelected func(txIDs []int64)
+	onRangeSelected func(points []XLogPoint)
 
 	mu           sync.RWMutex
 	needsRepaint atomic.Bool // Set from goroutine, consumed by main-thread timer
@@ -149,12 +176,64 @@ func NewChartWithConfig(parent *qt6.QWidget, config Config) *Chart {
 		c.handleDoubleClick(event)
 	})
 
+	// Key event for arrow keys
+	c.widget.SetFocusPolicy(qt6.StrongFocus)
+	c.widget.OnKeyPressEvent(func(super func(event *qt6.QKeyEvent), event *qt6.QKeyEvent) {
+		c.handleKeyPress(event)
+	})
+
 	return c
 }
 
 // QWidget returns the underlying Qt widget
 func (c *Chart) QWidget() *qt6.QWidget {
 	return c.widget
+}
+
+// viewNow returns the reference "now" time, shifted by timeOffset for panning
+func (c *Chart) viewNow() time.Time {
+	return time.Now().Add(-time.Duration(c.timeOffset) * time.Second)
+}
+
+func (c *Chart) handleKeyPress(event *qt6.QKeyEvent) {
+	key := event.Key()
+	switch qt6.Key(key) {
+	case qt6.Key_Up:
+		// Increase Y-axis max (see higher values) - double it, max 60s
+		newMax := c.config.MaxElapsed * 2
+		if newMax > 60000 {
+			newMax = 60000
+		}
+		c.config.MaxElapsed = newMax
+		c.widget.Update()
+	case qt6.Key_Down:
+		// Decrease Y-axis max (zoom in to lower values) - halve it, min 500ms
+		newMax := c.config.MaxElapsed / 2
+		if newMax < 500 {
+			newMax = 500
+		}
+		c.config.MaxElapsed = newMax
+		c.widget.Update()
+	case qt6.Key_Left:
+		// Move X-axis to past
+		step := c.config.TimeRange / 4
+		if step < 5 {
+			step = 5
+		}
+		c.timeOffset += step
+		c.widget.Update()
+	case qt6.Key_Right:
+		// Move X-axis to present
+		step := c.config.TimeRange / 4
+		if step < 5 {
+			step = 5
+		}
+		c.timeOffset -= step
+		if c.timeOffset < 0 {
+			c.timeOffset = 0
+		}
+		c.widget.Update()
+	}
 }
 
 // AddPoint adds a transaction point to the chart (thread-safe, no Qt calls)
@@ -198,7 +277,7 @@ func (c *Chart) ClearOldPoints() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	cutoff := time.Now().Add(-time.Duration(c.config.TimeRange) * time.Second)
+	cutoff := time.Now().Add(-time.Duration(c.config.TimeRange+c.timeOffset) * time.Second)
 	newPoints := make([]XLogPoint, 0, len(c.points))
 	for _, p := range c.points {
 		if p.EndTime.After(cutoff) {
@@ -227,7 +306,7 @@ func (c *Chart) SetOnPointSelected(callback func(txID int64)) {
 }
 
 // SetOnRangeSelected sets callback for range selection
-func (c *Chart) SetOnRangeSelected(callback func(txIDs []int64)) {
+func (c *Chart) SetOnRangeSelected(callback func(points []XLogPoint)) {
 	c.onRangeSelected = callback
 }
 
@@ -270,20 +349,53 @@ func (c *Chart) paint() {
 }
 
 func (c *Chart) drawGrid(painter *qt6.QPainter, theme *ThemeColors, left, top, w, h int) {
-	gridPen := qt6.NewQPen3(theme.GridColor)
-	gridPen.SetStyle(qt6.DashLine)
-	painter.SetPenWithPen(gridPen)
+	// Horizontal grid lines (5 lines) - pastel
+	hGridColor := qt6.NewQColor3(215, 222, 232)
+	if isDarkMode() {
+		hGridColor = qt6.NewQColor3(55, 62, 78)
+	}
+	hGridPen := qt6.NewQPen3(hGridColor)
+	hGridPen.SetStyle(qt6.DashLine)
+	painter.SetPenWithPen(hGridPen)
 
-	// Horizontal grid lines (5 lines)
 	for i := 1; i < 5; i++ {
 		y := top + (h * i / 5)
 		painter.DrawLine2(left, y, left+w, y)
 	}
 
-	// Vertical grid lines (6 lines for time)
-	for i := 1; i < 6; i++ {
-		x := left + (w * i / 6)
-		painter.DrawLine2(x, top, x, top+h)
+	// Vertical grid lines at 10s intervals with pastel tones
+	// 60s (minute boundary) = solid, slightly stronger pastel
+	// 30s = solid, lighter pastel
+	// 10s = dotted, very light pastel
+	minuteColor := qt6.NewQColor3(180, 200, 220)  // pastel blue-gray
+	halfMinColor := qt6.NewQColor3(210, 220, 230)  // lighter pastel
+	tenSecColor := qt6.NewQColor3(225, 230, 240)   // very light pastel
+	if isDarkMode() {
+		minuteColor = qt6.NewQColor3(80, 90, 110)
+		halfMinColor = qt6.NewQColor3(60, 68, 85)
+		tenSecColor = qt6.NewQColor3(48, 55, 70)
+	}
+
+	minutePen := qt6.NewQPen3(minuteColor)
+	minutePen.SetWidth(1)
+	minutePen.SetStyle(qt6.SolidLine)
+
+	halfMinPen := qt6.NewQPen3(halfMinColor)
+	halfMinPen.SetWidth(1)
+	halfMinPen.SetStyle(qt6.SolidLine)
+
+	tenSecPen := qt6.NewQPen3(tenSecColor)
+	tenSecPen.SetStyle(qt6.DotLine)
+
+	for _, gl := range c.calcTimeGridLines(left, w) {
+		if gl.seconds == 0 {
+			painter.SetPenWithPen(minutePen)
+		} else if gl.seconds == 30 {
+			painter.SetPenWithPen(halfMinPen)
+		} else {
+			painter.SetPenWithPen(tenSecPen)
+		}
+		painter.DrawLine2(gl.x, top, gl.x, top+h)
 	}
 }
 
@@ -295,20 +407,21 @@ func (c *Chart) drawPoints(painter *qt6.QPainter, theme *ThemeColors, left, top,
 		return
 	}
 
-	now := time.Now()
+	now := c.viewNow()
 	startTime := now.Add(-time.Duration(c.config.TimeRange) * time.Second)
 	maxElapsed := float64(c.config.MaxElapsed)
 	timeRange := float64(c.config.TimeRange * 1000) // Convert to ms
 
-	// Create pens for different states
-	normalPen := qt6.NewQPen3(theme.NormalColor)
-	normalPen.SetWidth(1)
-
+	// Pre-built pens/brushes
 	errorPen := qt6.NewQPen3(theme.ErrorColor)
 	errorPen.SetWidth(1)
 
 	selectedPen := qt6.NewQPen3(theme.SelectionColor)
 	selectedPen.SetWidth(1)
+
+	// Cache server color pens/brushes to avoid repeated allocation
+	serverPens := make(map[int]*qt6.QPen)
+	serverBrushes := make(map[int]*qt6.QBrush)
 
 	pointSize := c.config.PointSize
 
@@ -327,7 +440,7 @@ func (c *Chart) drawPoints(painter *qt6.QPainter, theme *ThemeColors, left, top,
 		}
 		y := top + h - int(elapsed/maxElapsed*float64(h))
 
-		// Choose color based on state
+		// Choose color: selected > error (red) > agent color (by ObjHash)
 		if c.selectedTxIDs[p.TxID] {
 			painter.SetPenWithPen(selectedPen)
 			painter.SetBrush(qt6.NewQBrush3(theme.SelectionColor))
@@ -335,8 +448,17 @@ func (c *Chart) drawPoints(painter *qt6.QPainter, theme *ThemeColors, left, top,
 			painter.SetPenWithPen(errorPen)
 			painter.SetBrush(qt6.NewQBrush3(theme.ErrorColor))
 		} else {
-			painter.SetPenWithPen(normalPen)
-			painter.SetBrush(qt6.NewQBrush3(theme.NormalColor))
+			key := int(p.ObjHash)
+			pen, ok := serverPens[key]
+			if !ok {
+				agentColor := getServerColor(key)
+				pen = qt6.NewQPen3(agentColor)
+				pen.SetWidth(1)
+				serverPens[key] = pen
+				serverBrushes[key] = qt6.NewQBrush3(agentColor)
+			}
+			painter.SetPenWithPen(pen)
+			painter.SetBrush(serverBrushes[key])
 		}
 
 		// Draw point as a filled rectangle (simpler than ellipse)
@@ -367,6 +489,35 @@ func (c *Chart) drawSelection(painter *qt6.QPainter, theme *ThemeColors) {
 	painter.DrawRect2(x1, y1, x2-x1, y2-y1)
 }
 
+type xlogGridLine struct {
+	x       int
+	time    time.Time
+	seconds int // second-of-minute (0-59)
+}
+
+// calcTimeGridLines computes grid line positions at 10-second intervals anchored to clock times
+func (c *Chart) calcTimeGridLines(left, w int) []xlogGridLine {
+	now := c.viewNow()
+	nowUnix := now.Unix()
+	// Align to 10-second boundary
+	lastRound := nowUnix - (nowUnix % 10)
+	startUnix := now.Add(-time.Duration(c.config.TimeRange) * time.Second).Unix()
+
+	fracOffset := float64(now.UnixMilli()%1000) / 1000.0
+	pixPerSec := float64(w) / float64(c.config.TimeRange)
+
+	var lines []xlogGridLine
+	for ts := lastRound; ts >= startUnix; ts -= 10 {
+		secsAgo := float64(nowUnix-ts) + fracOffset
+		xPos := left + w - int(secsAgo*pixPerSec)
+		if xPos >= left && xPos <= left+w {
+			t := time.Unix(ts, 0)
+			lines = append(lines, xlogGridLine{x: xPos, time: t, seconds: t.Second()})
+		}
+	}
+	return lines
+}
+
 func (c *Chart) drawAxes(painter *qt6.QPainter, theme *ThemeColors, left, top, w, h, totalHeight int) {
 	painter.SetPen(theme.TextColor)
 
@@ -378,14 +529,11 @@ func (c *Chart) drawAxes(painter *qt6.QPainter, theme *ThemeColors, left, top, w
 		painter.DrawText3(5, y+4, text)
 	}
 
-	// X-axis labels (time)
-	now := time.Now()
-	for i := 0; i <= 6; i++ {
-		offset := time.Duration(c.config.TimeRange*(6-i)/6) * time.Second
-		t := now.Add(-offset)
-		x := left + (w * i / 6)
-		text := t.Format("15:04:05")
-		painter.DrawText3(x-25, top+h+15, text)
+	// X-axis labels at 30s and 60s boundaries only
+	for _, gl := range c.calcTimeGridLines(left, w) {
+		if gl.seconds == 0 || gl.seconds == 30 {
+			painter.DrawText3(gl.x-22, top+h+13, gl.time.Format("15:04:05"))
+		}
 	}
 
 	// Y-axis title
@@ -475,7 +623,7 @@ func (c *Chart) handleClick(x, y int) {
 	chartWidth := width - marginLeft - marginRight
 	chartHeight := height - marginTop - marginBottom
 
-	now := time.Now()
+	now := c.viewNow()
 	startTime := now.Add(-time.Duration(c.config.TimeRange) * time.Second)
 	maxElapsed := float64(c.config.MaxElapsed)
 	timeRange := float64(c.config.TimeRange * 1000)
@@ -524,13 +672,13 @@ func (c *Chart) selectPointsInRect(x1, y1, x2, y2 int) {
 	chartWidth := width - marginLeft - marginRight
 	chartHeight := height - marginTop - marginBottom
 
-	now := time.Now()
+	now := c.viewNow()
 	startTime := now.Add(-time.Duration(c.config.TimeRange) * time.Second)
 	maxElapsed := float64(c.config.MaxElapsed)
 	timeRange := float64(c.config.TimeRange * 1000)
 
 	c.selectedTxIDs = make(map[int64]bool)
-	var selectedIDs []int64
+	var selectedPoints []XLogPoint
 
 	for _, p := range c.points {
 		if p.EndTime.Before(startTime) {
@@ -548,12 +696,12 @@ func (c *Chart) selectPointsInRect(x1, y1, x2, y2 int) {
 
 		if px >= x1 && px <= x2 && py >= y1 && py <= y2 {
 			c.selectedTxIDs[p.TxID] = true
-			selectedIDs = append(selectedIDs, p.TxID)
+			selectedPoints = append(selectedPoints, p)
 		}
 	}
 
-	if len(selectedIDs) > 0 && c.onRangeSelected != nil {
-		c.onRangeSelected(selectedIDs)
+	if len(selectedPoints) > 0 && c.onRangeSelected != nil {
+		c.onRangeSelected(selectedPoints)
 	}
 }
 

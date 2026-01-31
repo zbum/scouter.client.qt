@@ -37,7 +37,13 @@
       "Bash(jar xf:*)",
       "Bash(python3:*)",
       "Bash(go env:*)",
-      "Bash(screencapture:*)"
+      "Bash(screencapture:*)",
+      "Bash(GODEBUG=asyncpreemptoff=1 /Users/nhn/IdeaProjects/zbum/scouter.client.qt/dist/ScouterQt.app/Contents/MacOS/scouter.client:*)",
+      "Bash(xargs:*)",
+      "Bash(gh api:*)",
+      "Bash(make:*)",
+      "Bash(go run:*)",
+      "Bash(CGO_CXXFLAGS=\"-std=c++17\" go run:*)"
     ]
   }
 }

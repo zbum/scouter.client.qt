@@ -16,12 +16,9 @@ import (
 
 // Bar rendering constants
 const (
-	eqBarWidth   = 7
-	eqBarPadding = 2
-	eqAxisPad    = 16
-	eqMinUnitH   = 20
-	eqNameWidth  = 120
-	eqCountWidth = 50
+	eqBarW    = 6  // max width of each vertical bar
+	eqAxisPad = 16 // top padding for axis labels
+	eqCountW  = 30 // left count column width
 )
 
 // ActiveSpeedData holds the three active speed levels
@@ -36,6 +33,7 @@ type EqData struct {
 	ObjHash     int32
 	DisplayName string
 	Speed       ActiveSpeedData
+	Alive       bool
 }
 
 // eqWidget is the custom-painted EQ widget
@@ -78,19 +76,18 @@ func (w *eqWidget) paint() {
 	painter := qt6.NewQPainter2(w.QWidget.QPaintDevice)
 	defer painter.End()
 
-	painter.SetRenderHint(qt6.QPainter__Antialiasing)
-
 	widgetW := w.QWidget.Width()
 	widgetH := w.QWidget.Height()
 
-	// Colors used throughout
+	// Colors
 	grayColor := qt6.NewQColor3(128, 128, 128)
 	dimColor := qt6.NewQColor3(100, 100, 100)
 	darkColor := qt6.NewQColor3(80, 80, 80)
-	colorAct1 := qt6.NewQColor3(59, 130, 246)  // blue #3B82F6
-	colorAct2 := qt6.NewQColor3(234, 179, 8)   // yellow #EAB308
-	colorAct3 := qt6.NewQColor3(239, 68, 68)   // red #EF4444
-	blackColor := qt6.NewQColor3(0, 0, 0)
+	colorAct1 := qt6.NewQColor3(59, 130, 246)  // blue (normal)
+	colorAct2 := qt6.NewQColor3(234, 179, 8)   // yellow (slow)
+	colorAct3 := qt6.NewQColor3(239, 68, 68)   // red (very slow)
+	bgNameColor := qt6.NewQColor3(200, 200, 200)
+	rowBorderColor := qt6.NewQColor3(220, 220, 220)
 
 	if len(data) == 0 {
 		painter.SetPen(grayColor)
@@ -104,11 +101,11 @@ func (w *eqWidget) paint() {
 
 	n := len(data)
 	unitH := (widgetH - eqAxisPad) / n
-	if unitH < eqMinUnitH {
-		unitH = eqMinUnitH
+	if unitH < 20 {
+		unitH = 20
 	}
 
-	// Find max total across all rows
+	// Find max total across all rows for scale
 	var maxTotal int32
 	for _, d := range data {
 		total := d.Speed.Act1 + d.Speed.Act2 + d.Speed.Act3
@@ -116,11 +113,12 @@ func (w *eqWidget) paint() {
 			maxTotal = total
 		}
 	}
-	if maxTotal == 0 {
-		maxTotal = 1
+	if maxTotal < 10 {
+		maxTotal = 10
 	}
 
-	barSpace := widgetW - eqNameWidth - eqCountWidth
+	barStartX := eqCountW
+	barSpace := widgetW - barStartX
 
 	// Draw axis labels at top
 	painter.SetPen(dimColor)
@@ -128,98 +126,114 @@ func (w *eqWidget) paint() {
 	smallFont.SetPointSize(8)
 	painter.SetFont(smallFont)
 
-	// Scale labels: 0, max/2, max
 	halfMax := maxTotal / 2
-	painter.DrawText3(eqNameWidth, eqAxisPad-3, "0")
+	painter.DrawText3(barStartX, eqAxisPad-3, "0")
 	if barSpace > 100 {
-		midX := eqNameWidth + barSpace/2
+		midX := barStartX + barSpace/2
 		painter.DrawText3(midX, eqAxisPad-3, fmt.Sprintf("%d", halfMax))
 	}
-	painter.DrawText3(eqNameWidth+barSpace-30, eqAxisPad-3, fmt.Sprintf("%d", maxTotal))
-
-	// Draw axis line
-	axisLinePen := qt6.NewQPen3(darkColor)
-	painter.SetPenWithPen(axisLinePen)
-	painter.DrawLine2(eqNameWidth, eqAxisPad, eqNameWidth, eqAxisPad+n*unitH)
+	painter.DrawText3(barStartX+barSpace-30, eqAxisPad-3, fmt.Sprintf("%d", maxTotal))
 
 	nameFont := qt6.NewQFont()
 	nameFont.SetPointSize(9)
 
-	borderPen := qt6.NewQPen3(blackColor)
+	bgNameFont := qt6.NewQFont()
+	bgNameFont.SetPointSize(9)
+
+	rowBorderPen := qt6.NewQPen3(rowBorderColor)
+
+	// Scale text height proportionally to row height
+	textH := unitH / 4
+	if textH < 10 {
+		textH = 10
+	}
+	if textH > 16 {
+		textH = 16
+	}
+
+	// Scale bar width based on row height
+	barW := unitH / 10
+	if barW < 3 {
+		barW = 3
+	}
+	if barW > eqBarW {
+		barW = eqBarW
+	}
+	barGap := barW / 3
+	if barGap < 1 {
+		barGap = 1
+	}
 
 	for i, d := range data {
 		y := eqAxisPad + i*unitH
-		rowCenterY := y + unitH/2
 
-		// Draw object name (left side)
-		painter.SetPen(dimColor)
-		painter.SetFont(nameFont)
-		nameRect := qt6.NewQRect4(2, y, eqNameWidth-4, unitH)
-		painter.DrawText6(nameRect, int(qt6.AlignVCenter|qt6.AlignRight), d.DisplayName)
+		// Draw row separator line
+		painter.SetPenWithPen(rowBorderPen)
+		painter.DrawLine2(barStartX, y+unitH, widgetW, y+unitH)
+
+		// Draw agent name as background text (bottom-right of row)
+		painter.SetPen(bgNameColor)
+		if !d.Alive {
+			strikeFont := qt6.NewQFont()
+			strikeFont.SetPointSize(9)
+			strikeFont.SetStrikeOut(true)
+			painter.SetFont(strikeFont)
+		} else {
+			painter.SetFont(bgNameFont)
+		}
+		nameRect := qt6.NewQRect4(barStartX+4, y, barSpace-8, unitH)
+		painter.DrawText6(nameRect, int(qt6.AlignBottom|qt6.AlignRight), d.DisplayName)
 
 		total := d.Speed.Act1 + d.Speed.Act2 + d.Speed.Act3
+
+		// Draw count on left
+		painter.SetPen(dimColor)
+		painter.SetFont(nameFont)
+		countRect := qt6.NewQRect4(0, y, eqCountW-2, unitH)
+		painter.DrawText6(countRect, int(qt6.AlignVCenter|qt6.AlignRight), fmt.Sprintf("%d", total))
+
 		if total == 0 {
 			continue
 		}
 
-		// Calculate bar widths proportionally
-		scale := float64(barSpace-4) / float64(maxTotal)
-		w1 := int(float64(d.Speed.Act1) * scale)
-		w2 := int(float64(d.Speed.Act2) * scale)
-		w3 := int(float64(d.Speed.Act3) * scale)
-
-		barH := unitH - eqBarPadding*2
-		if barH > eqBarWidth*2 {
-			barH = eqBarWidth * 2
+		// Equalizer style: one vertical bar per active service, colored by type
+		barMaxH := unitH - textH - 6
+		if barMaxH < 8 {
+			barMaxH = 8
 		}
-		barY := rowCenterY - barH/2
+		barX := barStartX + 4
+		barBottom := y + unitH - textH - 2
 
-		// Draw bars: blue first, then yellow, then red
-		x := eqNameWidth + 2
-		painter.SetPenWithPen(borderPen)
+		// Draw each bar as a vertical column from bottom up
+		var barIdx int
+		drawBars := func(count int32, color *qt6.QColor) {
+			for j := int32(0); j < count; j++ {
+				x := barX + barIdx*(barW+barGap)
+				painter.FillRect5(x, barBottom-barMaxH, barW, barMaxH, color)
+				barIdx++
+			}
+		}
+		drawBars(d.Speed.Act1, colorAct1)
+		drawBars(d.Speed.Act2, colorAct2)
+		drawBars(d.Speed.Act3, colorAct3)
 
-		if w1 > 0 {
-			painter.FillRect5(x, barY, w1, barH, colorAct1)
-			painter.DrawRect2(x, barY, w1, barH)
-			x += w1
-		}
-		if w2 > 0 {
-			painter.FillRect5(x, barY, w2, barH, colorAct2)
-			painter.DrawRect2(x, barY, w2, barH)
-			x += w2
-		}
-		if w3 > 0 {
-			painter.FillRect5(x, barY, w3, barH, colorAct3)
-			painter.DrawRect2(x, barY, w3, barH)
-			x += w3
-		}
-
-		// Draw total count (right side)
+		// Draw total count next to the bars
+		totalX := barX + barIdx*(barW+barGap) + 4
 		painter.SetPen(dimColor)
-		painter.SetFont(nameFont)
-		countRect := qt6.NewQRect4(widgetW-eqCountWidth, y, eqCountWidth-4, unitH)
-		painter.DrawText6(countRect, int(qt6.AlignVCenter|qt6.AlignLeft), fmt.Sprintf("%d", total))
-	}
-
-	// Draw legend at bottom-right
-	legendY := eqAxisPad + n*unitH + 4
-	if legendY+14 < widgetH {
 		painter.SetFont(smallFont)
-		lx := widgetW - 200
-		sz := 8
+		painter.DrawText3(totalX, barBottom-barMaxH+12, fmt.Sprintf("%d", total))
 
-		painter.FillRect5(lx, legendY+2, sz, sz, colorAct1)
+		// Draw breakdown text below bars: (act1 / act2 / act3)
 		painter.SetPen(dimColor)
-		painter.DrawText3(lx+sz+3, legendY+10, "Normal")
-
-		lx += 60
-		painter.FillRect5(lx, legendY+2, sz, sz, colorAct2)
-		painter.DrawText3(lx+sz+3, legendY+10, "Slow")
-
-		lx += 50
-		painter.FillRect5(lx, legendY+2, sz, sz, colorAct3)
-		painter.DrawText3(lx+sz+3, legendY+10, "Very Slow")
+		painter.SetFont(smallFont)
+		breakdownText := fmt.Sprintf("(%d / %d / %d)", d.Speed.Act1, d.Speed.Act2, d.Speed.Act3)
+		painter.DrawText3(barX, barBottom+textH-2, breakdownText)
 	}
+
+	// Draw vertical axis line
+	axisLinePen := qt6.NewQPen3(darkColor)
+	painter.SetPenWithPen(axisLinePen)
+	painter.DrawLine2(barStartX, eqAxisPad, barStartX, eqAxisPad+n*unitH)
 }
 
 // GroupEQView is the dock widget wrapper for the EQ view
@@ -328,6 +342,11 @@ func (v *GroupEQView) fetchAndUpdate() {
 		})
 	}
 
+	// No results - keep previous data displayed
+	if len(results) == 0 {
+		return
+	}
+
 	// Build sorted display data
 	eqData := make([]EqData, 0, len(results))
 	objCache := cache.GetObjectCache()
@@ -336,10 +355,15 @@ func (v *GroupEQView) fetchAndUpdate() {
 		if name == "" {
 			name = fmt.Sprintf("obj-%d", hash)
 		}
+		alive := true
+		if obj := objCache.Get(hash); obj != nil {
+			alive = obj.Alive
+		}
 		eqData = append(eqData, EqData{
 			ObjHash:     hash,
 			DisplayName: name,
 			Speed:       speed,
+			Alive:       alive,
 		})
 	}
 	sort.Slice(eqData, func(i, j int) bool {

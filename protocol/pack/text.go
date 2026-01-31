@@ -18,9 +18,9 @@ const (
 	TextTypeCity       = "city"
 	TextTypeLogin      = "login"
 	TextTypeDesc       = "desc"
-	TextTypeWebHash    = "webhash"
-	TextTypeHashMsg    = "hashmsg"
-	TextTypeStackTrace = "stacktrace"
+	TextTypeWebHash    = "web"
+	TextTypeHashMsg    = "hmsg"
+	TextTypeStackTrace = "stackelem"
 )
 
 // TextPack represents a text dictionary entry

@@ -121,7 +121,7 @@ func (cm *ChartManager) AddChartWithTitle(title string) *ChartDock {
 // addChartWithID adds a chart with a specific ID and title
 func (cm *ChartManager) addChartWithID(id int, title string) *ChartDock {
 	if title == "" {
-		title = fmt.Sprintf("Chart %d", id)
+		title = fmt.Sprintf("%d", id)
 	}
 
 	// Create dock widget

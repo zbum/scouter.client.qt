@@ -331,32 +331,43 @@ func (c *Widget) paint() {
 		painter.DrawLine2(marginLeft, y, marginLeft+chartWidth, y)
 	}
 
-	// Calculate grid positions based on time
+	// Calculate grid positions anchored to real clock times (smooth scrolling)
 	now := time.Now()
-	gridInterval := c.config.TimeRange / 6 // seconds between grid lines
 
-	// Calculate time offset for smooth scrolling
-	totalSeconds := float64(now.Second()) + float64(now.Nanosecond())/1e9
-	secondsIntoInterval := totalSeconds - float64(int(totalSeconds)/gridInterval*gridInterval)
+	// Determine grid interval based on chart width
+	maxLabels := chartWidth / 60
+	if maxLabels < 2 {
+		maxLabels = 2
+	}
+	if maxLabels > 6 {
+		maxLabels = 6
+	}
+	gridInterval := c.config.TimeRange / maxLabels
+	if gridInterval < 1 {
+		gridInterval = 1
+	}
 
-	// Store grid line positions and times for both grid and labels
 	type gridLine struct {
 		x    int
 		time time.Time
 	}
 	var gridLines []gridLine
 
-	for i := -1; i <= 7; i++ {
-		// Calculate how many seconds ago this grid line represents
-		secondsAgo := secondsIntoInterval + float64(i*gridInterval)
-		if secondsAgo < 0 || secondsAgo > float64(c.config.TimeRange) {
-			continue
-		}
+	// Anchor grid lines to round clock seconds (e.g., every 10s at :00, :10, :20...)
+	// Find the most recent round time
+	nowUnix := now.Unix()
+	lastRound := nowUnix - (nowUnix % int64(gridInterval))
+	startUnix := now.Add(-time.Duration(c.config.TimeRange) * time.Second).Unix()
 
-		xPos := marginLeft + int(float64(chartWidth)*(1.0-secondsAgo/float64(c.config.TimeRange)))
+	// Fractional offset for sub-second smooth scrolling
+	fracOffset := float64(now.UnixMilli()%1000) / 1000.0
+	pixPerSec := float64(chartWidth) / float64(c.config.TimeRange)
+
+	for ts := lastRound; ts >= startUnix; ts -= int64(gridInterval) {
+		secsAgo := float64(nowUnix-ts) + fracOffset
+		xPos := marginLeft + chartWidth - int(secsAgo*pixPerSec)
 		if xPos >= marginLeft && xPos <= marginLeft+chartWidth {
-			t := now.Add(-time.Duration(secondsAgo * float64(time.Second)))
-			gridLines = append(gridLines, gridLine{x: xPos, time: t})
+			gridLines = append(gridLines, gridLine{x: xPos, time: time.Unix(ts, 0)})
 		}
 	}
 
@@ -386,7 +397,7 @@ func (c *Widget) paint() {
 		painter.DrawText3(5, y+5, label)
 	}
 
-	// Draw X axis labels (time) - same positions as grid lines
+	// Draw X axis labels (time)
 	painter.SetPen(theme.TextColor)
 	for _, gl := range gridLines {
 		painter.DrawText3(gl.x-20, height-5, gl.time.Format("15:04:05"))
@@ -494,10 +505,6 @@ func (c *Widget) paint() {
 			hasPrev = true
 		}
 	}
-
-	// Draw title
-	painter.SetPen(theme.TitleColor)
-	painter.DrawText3(marginLeft+chartWidth/2-40, 15, c.config.Title)
 
 	painter.End()
 }

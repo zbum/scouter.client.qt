@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"scouter.client.qt/protocol"
+	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
 	"scouter.client.qt/server"
 )
@@ -14,6 +15,7 @@ import (
 type TextEntry struct {
 	Text      string
 	Timestamp time.Time
+	Negative  bool // true if we looked up this hash and got no result
 }
 
 // TextCache caches hash-to-text mappings
@@ -54,8 +56,12 @@ func (c *TextCache) Get(textType string, hash int32) (string, bool) {
 		return "", false
 	}
 
-	// Check TTL
-	if time.Since(entry.Timestamp) > c.ttl {
+	// Negative cache entries expire faster (5 min) to allow re-lookup
+	ttl := c.ttl
+	if entry.Negative {
+		ttl = 5 * time.Minute
+	}
+	if time.Since(entry.Timestamp) > ttl {
 		return "", false
 	}
 
@@ -74,26 +80,35 @@ func (c *TextCache) Put(textType string, hash int32, text string) {
 	c.cache[textType][hash] = TextEntry{
 		Text:      text,
 		Timestamp: time.Now(),
+		Negative:  text == "",
 	}
 }
 
 // GetOrFetch retrieves text from cache or fetches from server
 func (c *TextCache) GetOrFetch(textType string, hash int32) string {
-	// Check cache first
+	if hash == 0 {
+		return ""
+	}
+
+	// Check cache first (including negative cache)
 	if text, ok := c.Get(textType, hash); ok {
 		return text
 	}
 
 	// Fetch from server
 	text := c.fetchFromServer(textType, hash)
-	if text != "" {
-		c.Put(textType, hash, text)
-	}
+
+	// Cache both positive and negative results to avoid repeated lookups.
+	// Negative entries use a shorter TTL (5 min) via the Negative flag.
+	c.Put(textType, hash, text)
 
 	return text
 }
 
-// fetchFromServer fetches text from a connected server
+// fetchFromServer fetches text from a connected server.
+// Uses GET_TEXT first (MapPack response), falls back to GET_TEXT_PACK (streaming TextPack)
+// if the text is not found. Some text types (like method) are stored in permanent storage
+// and may only be retrievable via GET_TEXT_PACK.
 func (c *TextCache) fetchFromServer(textType string, hash int32) string {
 	servers := server.GetManager().GetConnectedServers()
 	if len(servers) == 0 {
@@ -106,20 +121,66 @@ func (c *TextCache) fetchFromServer(textType string, hash int32) string {
 			continue
 		}
 
-		param := pack.NewMapPack()
-		param.PutText(protocol.ParamTextType, textType)
-		param.PutDecimal(protocol.ParamHashValue, hash)
+		date := time.Now().Format("20060102")
 
-		resp, err := session.Request(protocol.CMD_GET_TEXT, param)
-		if err == nil && resp != nil {
-			text := resp.GetText("text")
-			if text != "" {
-				return text
-			}
+		// Try GET_TEXT first (works well for service, etc.)
+		text := c.fetchViaGetText(session, textType, hash, date)
+		if text != "" {
+			return text
+		}
+
+		// Fall back to GET_TEXT_PACK (works for method, error stored in permanent DB)
+		text = c.fetchViaGetTextPack(session, textType, hash, date)
+		if text != "" {
+			return text
 		}
 	}
 
 	return ""
+}
+
+// fetchViaGetText uses CMD_GET_TEXT which returns a MapPack with Hexa32-encoded keys
+func (c *TextCache) fetchViaGetText(session interface{ Request(string, *pack.MapPack) (*pack.MapPack, error) }, textType string, hash int32, date string) string {
+	param := pack.NewMapPack()
+	param.PutText("date", date)
+	param.PutText(protocol.ParamTextType, textType)
+	hashList := &io.ListValue{}
+	hashList.Add(io.NewDecimalValue(hash))
+	param.Put(protocol.ParamHashValue, hashList)
+
+	resp, err := session.Request(protocol.CMD_GET_TEXT, param)
+	if err != nil {
+		return ""
+	}
+	if resp != nil {
+		key := protocol.Hexa32ToString32(int64(hash))
+		return resp.GetText(key)
+	}
+	return ""
+}
+
+// fetchViaGetTextPack uses CMD_GET_TEXT_PACK which streams TextPack objects directly
+func (c *TextCache) fetchViaGetTextPack(session interface {
+	RequestStream(string, *pack.MapPack, func(pack.Pack) bool) error
+}, textType string, hash int32, date string) string {
+	param := pack.NewMapPack()
+	param.PutText("date", date)
+	param.PutText(protocol.ParamTextType, textType)
+	hashList := &io.ListValue{}
+	hashList.Add(io.NewDecimalValue(hash))
+	param.Put(protocol.ParamHashValue, hashList)
+
+	var result string
+	_ = session.RequestStream(protocol.CMD_GET_TEXT_PACK, param, func(p pack.Pack) bool {
+		if tp, ok := p.(*pack.TextPack); ok {
+			if tp.Hash == hash && tp.Text != "" {
+				result = tp.Text
+			}
+		}
+		return true
+	})
+	// Ignore EOF errors - GET_TEXT_PACK may close stream without NoNEXT flag
+	return result
 }
 
 // BatchGet retrieves multiple texts, fetching missing ones
@@ -148,7 +209,7 @@ func (c *TextCache) BatchGet(textType string, hashes []int32) map[int32]string {
 	return result
 }
 
-// batchFetchFromServer fetches multiple texts from server
+// batchFetchFromServer fetches multiple texts from server using a single request
 func (c *TextCache) batchFetchFromServer(textType string, hashes []int32) map[int32]string {
 	result := make(map[int32]string)
 
@@ -163,26 +224,30 @@ func (c *TextCache) batchFetchFromServer(textType string, hashes []int32) map[in
 			continue
 		}
 
-		// Build request with hash array
-		// Note: This is a simplified version; actual implementation
-		// might need to use CMD_GET_TEXT_100 for batch requests
+		param := pack.NewMapPack()
+		param.PutText(protocol.ParamTextType, textType)
+		hashList := &io.ListValue{}
 		for _, hash := range hashes {
-			if _, exists := result[hash]; exists {
-				continue
+			if _, exists := result[hash]; !exists {
+				hashList.Add(io.NewDecimalValue(hash))
 			}
+		}
+		if hashList.Size() == 0 {
+			break
+		}
+		param.Put(protocol.ParamHashValue, hashList)
 
-			param := pack.NewMapPack()
-			param.PutText(protocol.ParamTextType, textType)
-			param.PutDecimal(protocol.ParamHashValue, hash)
-
-			resp, err := session.Request(protocol.CMD_GET_TEXT, param)
-			if err == nil && resp != nil {
-				text := resp.GetText("text")
+		resp, err := session.Request(protocol.CMD_GET_TEXT, param)
+		if err == nil && resp != nil {
+			for _, hash := range hashes {
+				key := protocol.Hexa32ToString32(int64(hash))
+				text := resp.GetText(key)
 				if text != "" {
 					result[hash] = text
 				}
 			}
 		}
+		break
 	}
 
 	return result
@@ -288,3 +353,4 @@ func (c *TextCache) GetDesc(hash int32) string {
 func (c *TextCache) GetMessage(hash int32) string {
 	return c.GetOrFetch(pack.TextTypeHashMsg, hash)
 }
+

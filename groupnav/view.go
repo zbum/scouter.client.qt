@@ -310,13 +310,14 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 								counter string
 							}
 							counters := []counterItem{
-								{"TPS Chart", "TPS"},
-								{"Response Time Chart", "ElapsedTime"},
-								{"Active Service Chart", "ActiveService"},
-								{"CPU Chart", "Cpu"},
-								{"Memory Chart", "UsedMemory"},
-								{"GC Count Chart", "GcCount"},
-								{"GC Time Chart", "GcTime"},
+								{"TPS", "TPS"},
+								{"Response Time", "ElapsedTime"},
+								{"Active Service", "ActiveService"},
+								{"CPU", "Cpu"},
+								{"Memory", "UsedMemory"},
+								{"Heap Used", "HeapUsed"},
+								{"GC Count", "GcCount"},
+								{"GC Time", "GcTime"},
 							}
 							for _, ci := range counters {
 								ci := ci // capture
