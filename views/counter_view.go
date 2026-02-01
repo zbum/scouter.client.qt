@@ -7,6 +7,7 @@ import (
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/chart"
 	"scouter.client.qt/model"
+	"scouter.client.qt/qtutil"
 )
 
 // CounterType represents different counter types
@@ -86,17 +87,16 @@ func AllCounterTypes() []CounterType {
 
 // CounterView represents a counter visualization view with real-time data
 type CounterView struct {
-	dock            *qt6.QDockWidget
-	objectNameBytes []byte
-	chart           *chart.Widget
-	counterCombo    *qt6.QComboBox
-	currentCounter  CounterType
-	subscriptionID  int
-	engine          *model.CounterEngine
-	objHash         int32
-	autoScale       bool
-	autoScaleCheck  *qt6.QCheckBox
-	maxObserved     int64
+	dock           *qt6.QDockWidget
+	chart          *chart.Widget
+	counterCombo   *qt6.QComboBox
+	currentCounter CounterType
+	subscriptionID int
+	engine         *model.CounterEngine
+	objHash        int32
+	autoScale      bool
+	autoScaleCheck *qt6.QCheckBox
+	maxObserved    int64
 }
 
 // NewCounterView creates a new counter view
@@ -110,9 +110,8 @@ func NewCounterView(mainWindow *qt6.QMainWindow, title string, objHash int32) *C
 
 	// Create dock widget
 	view.dock = qt6.NewQDockWidget2(title)
-	view.objectNameBytes = []byte(fmt.Sprintf("counterDock_%s", title))
-	objectNameView := qt6.NewQAnyStringView2(view.objectNameBytes)
-	view.dock.SetObjectName(*objectNameView)
+	objectName := fmt.Sprintf("counterDock_%s", title)
+	qtutil.SetObjectName(view.dock.QWidget.QObject, objectName)
 	view.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	view.setupUI()

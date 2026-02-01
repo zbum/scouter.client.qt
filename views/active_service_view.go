@@ -9,6 +9,7 @@ import (
 	"scouter.client.qt/protocol"
 	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 )
 
@@ -26,8 +27,7 @@ type ActiveService struct {
 
 // ActiveServiceView represents the active service list view
 type ActiveServiceView struct {
-	dock            *qt6.QDockWidget
-	objectNameBytes []byte
+	dock *qt6.QDockWidget
 
 	// UI components
 	tableWidget *qt6.QTableWidget
@@ -55,9 +55,7 @@ func NewActiveServiceView(mainWindow *qt6.QMainWindow) *ActiveServiceView {
 
 	// Create dock widget
 	v.dock = qt6.NewQDockWidget2("Active Service")
-	v.objectNameBytes = []byte("activeServiceDock")
-	objectNameView := qt6.NewQAnyStringView2(v.objectNameBytes)
-	v.dock.SetObjectName(*objectNameView)
+	qtutil.SetObjectName(v.dock.QWidget.QObject, "activeServiceDock")
 	v.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	// Create container

@@ -7,14 +7,14 @@ import (
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/dialogs"
 	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 )
 
 // View represents the Group Navigation View (dock widget with tabs)
 type View struct {
-	dock            *qt6.QDockWidget
-	tabWidget       *qt6.QTabWidget
-	objectNameBytes []byte // Keep object name bytes alive for QAnyStringView
+	dock      *qt6.QDockWidget
+	tabWidget *qt6.QTabWidget
 
 	// Group tab
 	groupTreeView *qt6.QTreeView
@@ -72,10 +72,8 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 	// Create dock widget
 	v.dock = qt6.NewQDockWidget2("Navigation")
 
-	// Create object name bytes and keep in memory for Qt state save/restore
-	v.objectNameBytes = []byte("groupNavigationDock")
-	objectNameView := qt6.NewQAnyStringView2(v.objectNameBytes)
-	v.dock.SetObjectName(*objectNameView)
+	// Set object name for Qt state save/restore
+	qtutil.SetObjectName(v.dock.QWidget.QObject, "groupNavigationDock")
 	v.dock.SetAllowedAreas(qt6.LeftDockWidgetArea | qt6.RightDockWidgetArea)
 
 	// Create container widget with vertical layout

@@ -1,5 +1,7 @@
 package main
 
+//go:debug asyncpreemptoff=1
+
 import (
 	"fmt"
 	"os"
@@ -9,6 +11,8 @@ import (
 	"scouter.client.qt/chart"
 	"scouter.client.qt/groupnav"
 	"scouter.client.qt/model"
+	"scouter.client.qt/perspective"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 	"scouter.client.qt/settings"
 	"scouter.client.qt/views"
@@ -21,36 +25,37 @@ const appName = "scouter.client.go"
 
 // ChartManager manages multiple chart dock widgets
 type ChartManager struct {
-	mainWindow     *qt6.QMainWindow
-	charts         []*ChartDock
-	groupCharts    []*views.GroupCounterView
-	xlogViews      []*xlog.View
-	eqViews        []*views.GroupEQView
-	chartCount     int
+	mainWindow      *qt6.QMainWindow
+	charts          []*ChartDock
+	groupCharts     []*views.GroupCounterView
+	xlogViews       []*xlog.View
+	eqViews         []*views.GroupEQView
+	chartCount      int
 	groupChartCount int
-	xlogCount      int
-	eqCount        int
-	timer          *qt6.QTimer
-	onStateChanged func() // Callback when dock state changes
-	isRestoring    bool   // Flag to prevent saving during restore
-	appSettings    *settings.AppSettings
+	xlogCount       int
+	eqCount         int
+	timer           *qt6.QTimer
+	onStateChanged  func() // Callback when dock state changes
+	isRestoring     bool   // Flag to prevent saving during restore
+	appSettings     *settings.AppSettings
+	dockPrefix      string // Unique prefix for dock object names per perspective
 }
 
 // ChartDock holds a chart widget and its dock
 type ChartDock struct {
-	dock            *qt6.QDockWidget
-	chart           *chart.Widget
-	id              int
-	objectNameBytes []byte // Keep object name bytes alive for QAnyStringView
-	counterName     string // Counter name for real data (empty = demo mode)
-	subscriptionID  int    // CounterEngine subscription ID
+	dock           *qt6.QDockWidget
+	chart          *chart.Widget
+	id             int
+	counterName    string // Counter name for real data (empty = demo mode)
+	subscriptionID int    // CounterEngine subscription ID
 }
 
-func NewChartManager(mainWindow *qt6.QMainWindow, appSettings *settings.AppSettings) *ChartManager {
+func NewChartManager(mainWindow *qt6.QMainWindow, appSettings *settings.AppSettings, dockPrefix string) *ChartManager {
 	cm := &ChartManager{
 		mainWindow:  mainWindow,
 		chartCount:  0,
 		appSettings: appSettings,
+		dockPrefix:  dockPrefix,
 	}
 
 	// Timer for updating charts in demo mode
@@ -131,10 +136,9 @@ func (cm *ChartManager) addChartWithID(id int, title string) *ChartDock {
 	// Create dock widget
 	dock := qt6.NewQDockWidget2(title)
 
-	// Create object name bytes and keep in memory for Qt state save/restore
-	objNameBytes := []byte(fmt.Sprintf("chartDock%d", id))
-	objNameView := qt6.NewQAnyStringView2(objNameBytes)
-	dock.SetObjectName(*objNameView)
+	// Set object name for Qt state save/restore
+	objName := fmt.Sprintf("%s_chartDock%d", cm.dockPrefix, id)
+	qtutil.SetObjectName(dock.QWidget.QObject, objName)
 	dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	// Create chart widget
@@ -143,10 +147,9 @@ func (cm *ChartManager) addChartWithID(id int, title string) *ChartDock {
 	dock.SetWidget(chartWidget.QWidget())
 
 	cd := &ChartDock{
-		dock:            dock,
-		chart:           chartWidget,
-		id:              id,
-		objectNameBytes: objNameBytes, // Keep in memory for Qt state restore
+		dock:  dock,
+		chart: chartWidget,
+		id:    id,
 	}
 
 	// Connect dock change signals to save state
@@ -171,6 +174,9 @@ func (cm *ChartManager) addChartWithID(id int, title string) *ChartDock {
 		cm.chartCount = id
 	}
 
+	// Redistribute dock heights so new dock gets fair space
+	cm.redistributeDockHeights()
+
 	// Notify state changed (new dock added)
 	cm.notifyStateChanged()
 
@@ -190,7 +196,9 @@ func (cm *ChartManager) addGroupChartWithID(id int, groupName, objType, counterN
 		cm.groupChartCount = id
 	}
 
+	// Override dock object name with perspective prefix
 	dock := gcv.Dock()
+	cm.setDockObjectName(dock, fmt.Sprintf("%s_groupCounterDock_%d_%s_%s", cm.dockPrefix, id, groupName, counterName))
 	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
 		cm.notifyStateChanged()
 	})
@@ -201,6 +209,7 @@ func (cm *ChartManager) addGroupChartWithID(id int, groupName, objType, counterN
 		cm.notifyStateChanged()
 	})
 
+	cm.redistributeDockHeights()
 	cm.notifyStateChanged()
 	return gcv
 }
@@ -219,6 +228,7 @@ func (cm *ChartManager) addXLogViewWithID(id int, groupName, objType string) *xl
 	}
 
 	dock := xv.Dock()
+	cm.setDockObjectName(dock, fmt.Sprintf("%s_xlogDock_%d_%s", cm.dockPrefix, id, groupName))
 	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
 		cm.notifyStateChanged()
 	})
@@ -229,6 +239,7 @@ func (cm *ChartManager) addXLogViewWithID(id int, groupName, objType string) *xl
 		cm.notifyStateChanged()
 	})
 
+	cm.redistributeDockHeights()
 	cm.notifyStateChanged()
 	return xv
 }
@@ -247,6 +258,7 @@ func (cm *ChartManager) addEQViewWithID(id int, groupName, objType string) *view
 	}
 
 	dock := ev.Dock()
+	cm.setDockObjectName(dock, fmt.Sprintf("%s_eqDock_%d_%s", cm.dockPrefix, id, groupName))
 	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
 		cm.notifyStateChanged()
 	})
@@ -257,33 +269,14 @@ func (cm *ChartManager) addEQViewWithID(id int, groupName, objType string) *view
 		cm.notifyStateChanged()
 	})
 
+	cm.redistributeDockHeights()
 	cm.notifyStateChanged()
 	return ev
 }
 
-// AddDefaultCharts adds 4 default charts in a 2x2 layout
+// AddDefaultCharts is a no-op. New perspectives start empty;
+// users add charts from the group navigation panel.
 func (cm *ChartManager) AddDefaultCharts() {
-	titles := []string{"TPS", "Response Time", "Active Service", "CPU Usage"}
-
-	var firstDock, secondDock *qt6.QDockWidget
-
-	for i, title := range titles {
-		cd := cm.AddChartWithTitle(title)
-
-		if i == 0 {
-			firstDock = cd.dock
-		} else if i == 1 {
-			secondDock = cd.dock
-			// 두 번째 차트를 첫 번째 차트 아래에 배치
-			cm.mainWindow.SplitDockWidget(firstDock, secondDock, qt6.Vertical)
-		} else if i == 2 {
-			// 세 번째 차트를 첫 번째 차트 오른쪽에 배치
-			cm.mainWindow.SplitDockWidget(firstDock, cd.dock, qt6.Horizontal)
-		} else if i == 3 {
-			// 네 번째 차트를 세 번째 차트 아래에 배치
-			cm.mainWindow.SplitDockWidget(cm.charts[2].dock, cd.dock, qt6.Vertical)
-		}
-	}
 }
 
 // GetDocks returns all chart dock widgets
@@ -310,24 +303,20 @@ func (cm *ChartManager) notifyStateChanged() {
 	}
 }
 
-func (cm *ChartManager) SaveState() {
-	// Save charts with IDs (for matching Qt object names on restore)
-	chartConfigs := make([]settings.ChartConfig, len(cm.charts))
-	for i, cd := range cm.charts {
-		chartConfigs[i] = settings.ChartConfig{
-			ID:    cd.id,
-			Title: cd.chart.Title(),
-		}
-	}
-	cm.appSettings.Charts = chartConfigs
-	cm.appSettings.ChartCount = len(cm.charts) // backward compat
+// setDockObjectName overrides a dock's object name with a prefixed name
+func (cm *ChartManager) setDockObjectName(dock *qt6.QDockWidget, name string) {
+	qtutil.SetObjectName(dock.QWidget.QObject, name)
+}
 
-	// Save chart titles (backward compat)
-	titles := make([]string, len(cm.charts))
-	for i, cd := range cm.charts {
-		titles[i] = cd.chart.Title()
-	}
-	cm.appSettings.ChartTitles = titles
+// SavePerspectiveState returns the current state as a PerspectiveState
+// Note: WindowState is NOT saved here - it's managed by perspective.Manager
+// because mainWindow.SaveState() is global and includes all docks.
+func (cm *ChartManager) SavePerspectiveState() *settings.PerspectiveState {
+	ps := &settings.PerspectiveState{}
+
+	// Standalone charts are no longer used (group charts replace them)
+	// Keep empty for backward compatibility
+	ps.Charts = nil
 
 	// Save group counter charts
 	var groupConfigs []settings.GroupChartConfig
@@ -340,7 +329,7 @@ func (cm *ChartManager) SaveState() {
 			DisplayName: gcv.CounterDisplay(),
 		})
 	}
-	cm.appSettings.GroupCharts = groupConfigs
+	ps.GroupCharts = groupConfigs
 
 	// Save XLog views
 	var xlogConfigs []settings.XLogViewConfig
@@ -351,7 +340,7 @@ func (cm *ChartManager) SaveState() {
 			ObjType:   xv.ObjType(),
 		})
 	}
-	cm.appSettings.XLogViews = xlogConfigs
+	ps.XLogViews = xlogConfigs
 
 	// Save EQ views
 	var eqConfigs []settings.EQViewConfig
@@ -362,62 +351,120 @@ func (cm *ChartManager) SaveState() {
 			ObjType:   ev.ObjType(),
 		})
 	}
-	cm.appSettings.EQViews = eqConfigs
+	ps.EQViews = eqConfigs
 
-	// Save window state (dock positions)
-	cm.appSettings.WindowState = cm.mainWindow.SaveState()
-
-	// Save to JSON file
-	cm.appSettings.Save()
+	return ps
 }
 
-// RestoreState restores chart state, returns true if window state was restored
-func (cm *ChartManager) RestoreState() bool {
+// RestorePerspectiveState creates docks from a PerspectiveState (does NOT restore WindowState)
+func (cm *ChartManager) RestorePerspectiveState(ps *settings.PerspectiveState) bool {
+	if ps == nil {
+		return false
+	}
+
 	cm.isRestoring = true
 	defer func() { cm.isRestoring = false }()
 
-	// Restore charts with their original IDs (for Qt object name matching)
-	if len(cm.appSettings.Charts) > 0 {
-		for _, cc := range cm.appSettings.Charts {
-			cm.addChartWithID(cc.ID, cc.Title)
-		}
-	} else {
-		// Backward compat: no Charts field, use ChartCount + ChartTitles
-		chartCount := cm.appSettings.ChartCount
-		if chartCount < 1 {
-			chartCount = 1
-		}
-		titles := cm.appSettings.ChartTitles
-		for i := 0; i < chartCount; i++ {
-			var title string
-			if i < len(titles) && titles[i] != "" {
-				title = titles[i]
-			}
-			cm.AddChartWithTitle(title)
-		}
-	}
+	// Standalone charts (ps.Charts) are no longer restored - they were empty placeholder charts.
+	// Only group charts, xlog views, and eq views are restored.
 
 	// Restore group counter charts
-	for _, gc := range cm.appSettings.GroupCharts {
+	for _, gc := range ps.GroupCharts {
 		cm.addGroupChartWithID(gc.ID, gc.GroupName, gc.ObjType, gc.CounterName, gc.DisplayName)
 	}
 
 	// Restore XLog views
-	for _, xc := range cm.appSettings.XLogViews {
+	for _, xc := range ps.XLogViews {
 		cm.addXLogViewWithID(xc.ID, xc.GroupName, xc.ObjType)
 	}
 
 	// Restore EQ views
-	for _, ec := range cm.appSettings.EQViews {
+	for _, ec := range ps.EQViews {
 		cm.addEQViewWithID(ec.ID, ec.GroupName, ec.ObjType)
 	}
 
-	// Restore window state (dock positions and visibility)
-	if len(cm.appSettings.WindowState) > 0 {
-		cm.mainWindow.RestoreState(cm.appSettings.WindowState)
-		return true
+	return len(ps.GroupCharts) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
+}
+
+// GetAllDocks returns all dock widgets (charts, group charts, xlogs, eqs)
+func (cm *ChartManager) GetAllDocks() []*qt6.QDockWidget {
+	var docks []*qt6.QDockWidget
+	for _, cd := range cm.charts {
+		docks = append(docks, cd.dock)
 	}
-	return false
+	for _, gcv := range cm.groupCharts {
+		docks = append(docks, gcv.Dock())
+	}
+	for _, xv := range cm.xlogViews {
+		docks = append(docks, xv.Dock())
+	}
+	for _, ev := range cm.eqViews {
+		docks = append(docks, ev.Dock())
+	}
+	return docks
+}
+
+// redistributeDockHeights evenly distributes vertical space among all visible docks
+func (cm *ChartManager) redistributeDockHeights() {
+	docks := cm.GetAllDocks()
+	var visible []*qt6.QDockWidget
+	for _, d := range docks {
+		if d.IsVisible() && !d.IsFloating() {
+			visible = append(visible, d)
+		}
+	}
+	if len(visible) == 0 {
+		return
+	}
+	// Equal height distribution
+	sizes := make([]int, len(visible))
+	for i := range sizes {
+		sizes[i] = 200
+	}
+	cm.mainWindow.ResizeDocks(visible, sizes, qt6.Vertical)
+
+	// Set width to 1/3 of window
+	targetWidth := cm.mainWindow.Width() / 3
+	widths := make([]int, len(visible))
+	for i := range widths {
+		widths[i] = targetWidth
+	}
+	cm.mainWindow.ResizeDocks(visible, widths, qt6.Horizontal)
+}
+
+// ShowAllDocks shows all dock widgets
+func (cm *ChartManager) ShowAllDocks() {
+	for _, d := range cm.GetAllDocks() {
+		d.Show()
+	}
+}
+
+// HideAllDocks hides all dock widgets
+func (cm *ChartManager) HideAllDocks() {
+	for _, d := range cm.GetAllDocks() {
+		d.Hide()
+	}
+}
+
+// Destroy cleans up all docks and stops the timer
+func (cm *ChartManager) Destroy() {
+	cm.timer.Stop()
+	for _, cd := range cm.charts {
+		cd.dock.DeleteLater()
+	}
+	for _, gcv := range cm.groupCharts {
+		gcv.Dock().DeleteLater()
+	}
+	for _, xv := range cm.xlogViews {
+		xv.Dock().DeleteLater()
+	}
+	for _, ev := range cm.eqViews {
+		ev.Dock().DeleteLater()
+	}
+	cm.charts = nil
+	cm.groupCharts = nil
+	cm.xlogViews = nil
+	cm.eqViews = nil
 }
 
 func main() {
@@ -475,8 +522,88 @@ func main() {
 		saveGeometryToFile()
 	})
 
-	// Chart Manager 생성
-	chartManager := NewChartManager(mainWindow, appSettings)
+	// dock 위젯을 중앙에 배치할 수 있도록 설정
+	mainWindow.SetDockNestingEnabled(true)
+
+	// 모든 dock 영역의 탭을 상단에 표시
+	mainWindow.SetTabPosition(qt6.AllDockWidgetAreas, qt6.QTabWidget__North)
+
+	// Perspective Manager 생성 (factory set below after saveWindowState is defined)
+	var perspMgr *perspective.Manager
+
+	// 상태 저장 함수
+	saveWindowState := func() {
+		if perspMgr != nil && !perspMgr.IsSwitching() {
+			perspMgr.SaveCurrentState()
+			appSettings.Save()
+		}
+	}
+
+	// ChartManager 팩토리 함수 (includes saveWindowState callback)
+	chartManagerFactory := func(perspID string) perspective.ChartManagerInterface {
+		cm := NewChartManager(mainWindow, appSettings, perspID)
+		cm.SetOnStateChanged(saveWindowState)
+		return cm
+	}
+
+	perspMgr = perspective.NewManager(mainWindow, appSettings, chartManagerFactory)
+
+	// 모든 perspective 복원 (PerspectiveOrder 순서대로)
+	stateRestored := false
+	activePerspID := perspective.ID(appSettings.ActivePerspective)
+
+	if len(appSettings.PerspectiveOrder) > 0 {
+		// PerspectiveOrder에 따라 복원
+		for _, id := range appSettings.PerspectiveOrder {
+			ps := appSettings.GetPerspectiveState(id)
+			name := ps.Name
+			if name == "" {
+				name = id // fallback
+			}
+			cm := NewChartManager(mainWindow, appSettings, id)
+			cm.SetOnStateChanged(saveWindowState)
+			p := perspective.NewServicePerspective(perspective.ID(id), name, cm)
+			perspMgr.Register(p)
+
+			// 모든 perspective의 dock 생성
+			hasState := len(ps.GroupCharts) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
+			if hasState {
+				p.RestoreState(mainWindow, ps)
+				stateRestored = true
+			}
+
+			// 비활성 perspective는 즉시 Deactivate (dock hide)
+			if perspective.ID(id) != activePerspID {
+				p.Deactivate(mainWindow)
+			}
+		}
+	} else if _, ok := appSettings.Perspectives["service"]; ok {
+		// PerspectiveOrder 없지만 service perspective 존재 (마이그레이션 직후)
+		ps := appSettings.GetPerspectiveState("service")
+		name := ps.Name
+		if name == "" {
+			name = "Service"
+		}
+		cm := NewChartManager(mainWindow, appSettings, "service")
+		cm.SetOnStateChanged(saveWindowState)
+		p := perspective.NewServicePerspective(perspective.ServiceID, name, cm)
+		perspMgr.Register(p)
+		activePerspID = perspective.ServiceID
+		hasState := len(ps.GroupCharts) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
+		if hasState {
+			p.RestoreState(mainWindow, ps)
+			stateRestored = true
+		}
+	}
+
+	// perspective가 하나도 없으면 기본 Service perspective 생성
+	if len(perspMgr.Perspectives()) == 0 {
+		cm := NewChartManager(mainWindow, appSettings, "service")
+		cm.SetOnStateChanged(saveWindowState)
+		p := perspective.NewServicePerspective(perspective.ServiceID, "Service", cm)
+		perspMgr.Register(p)
+		activePerspID = perspective.ServiceID
+	}
 
 	// Group Navigation View 생성 (좌측 탐색기)
 	groupNavView := groupnav.NewView(mainWindow)
@@ -489,30 +616,40 @@ func main() {
 		groupNavView.SetActiveTab(appSettings.NavActiveTab)
 	}
 
-	// Set group chart callback
+	// getActiveChartManager returns the active perspective's ChartManager
+	getActiveChartManager := func() *ChartManager {
+		p := perspMgr.ActivePerspective()
+		if p == nil {
+			return nil
+		}
+		if sp, ok := p.(*perspective.ServicePerspective); ok {
+			if cm, ok := sp.ChartManager().(*ChartManager); ok {
+				return cm
+			}
+		}
+		return nil
+	}
+
+	// Set group chart callback - delegates to active perspective
 	groupNavView.SetOnAddGroupChart(func(groupName, objType, counterName, displayName string) {
-		chartManager.AddGroupChart(groupName, objType, counterName, displayName)
+		if cm := getActiveChartManager(); cm != nil {
+			cm.AddGroupChart(groupName, objType, counterName, displayName)
+		}
 	})
 
 	// Set group XLog callback
 	groupNavView.SetOnAddGroupXLog(func(groupName, objType string) {
-		chartManager.AddXLogView(groupName, objType)
+		if cm := getActiveChartManager(); cm != nil {
+			cm.AddXLogView(groupName, objType)
+		}
 	})
 
 	// Set group EQ callback
 	groupNavView.SetOnAddGroupEQ(func(groupName, objType string) {
-		chartManager.AddEQView(groupName, objType)
-	})
-
-	// 상태 저장 함수 (복원 중에는 저장하지 않음)
-	saveWindowState := func() {
-		if !chartManager.isRestoring {
-			chartManager.SaveState()
+		if cm := getActiveChartManager(); cm != nil {
+			cm.AddEQView(groupName, objType)
 		}
-	}
-
-	// Chart Manager 상태 변경 콜백 설정
-	chartManager.SetOnStateChanged(saveWindowState)
+	})
 
 	// Group Navigation dock 변경 이벤트 연결
 	groupNavDock := groupNavView.Dock()
@@ -526,21 +663,32 @@ func main() {
 		saveWindowState()
 	})
 
-	// dock 위젯을 중앙에 배치할 수 있도록 설정
-	mainWindow.SetDockNestingEnabled(true)
-
-	// 모든 dock 영역의 탭을 상단에 표시
-	mainWindow.SetTabPosition(qt6.AllDockWidgetAreas, qt6.QTabWidget__North)
-
 	// 메뉴 매니저 생성
-	_ = NewMenuManager(mainWindow, chartManager)
-
-	// 차트 상태 복원 먼저 시도
-	stateRestored := chartManager.RestoreState()
+	_ = NewMenuManager(mainWindow, perspMgr)
 
 	// 저장된 상태가 없으면 기본 차트 4개 추가
 	if !stateRestored {
-		chartManager.AddDefaultCharts()
+		if p := perspMgr.Perspectives()[0]; p != nil {
+			p.SetupDefaultLayout(mainWindow)
+		}
+	}
+
+	// 활성 perspective 설정 (탭 선택만, dock은 이미 추가됨)
+	perspMgr.SetActiveInitial(activePerspID)
+
+	// 비활성 perspective의 dock이 보이지 않도록 정리
+	perspMgr.HideInactiveDocks()
+
+	// 활성 perspective의 dock 레이아웃 복원 (위치 + 비율)
+	// 비활성 dock을 임시 제거하여 RestoreState가 활성 dock만 복원하도록 함
+	if ps := appSettings.GetPerspectiveState(string(activePerspID)); ps != nil && len(ps.WindowState) > 0 {
+		restoreInactive := perspMgr.HideInactiveDocksFromRestore()
+		size := mainWindow.Size()
+		mainWindow.QWidget.SetFixedSize(size)
+		mainWindow.RestoreState(ps.WindowState)
+		mainWindow.QWidget.SetMinimumSize2(0, 0)
+		mainWindow.QWidget.SetMaximumSize2(16777215, 16777215)
+		restoreInactive()
 	}
 
 	// CounterEngine 시작 (서버에서 카운터 데이터 폴링)
@@ -549,13 +697,14 @@ func main() {
 	// AutoConnect가 활성화된 서버들에 자동 연결
 	go server.GetManager().ConnectAll()
 
-	// 창 닫을 때 차트 상태 저장
+	// 창 닫을 때 perspective 상태 저장
 	mainWindow.OnCloseEvent(func(super func(event *qt6.QCloseEvent), event *qt6.QCloseEvent) {
 		// Save navigation tree state
 		appSettings.NavCollapsedItems = groupNavView.GetCollapsedItems()
 		appSettings.NavActiveTab = groupNavView.GetActiveTab()
 
-		chartManager.SaveState()
+		perspMgr.SaveAllStates()
+		appSettings.Save()
 		super(event)
 	})
 
@@ -565,27 +714,23 @@ func main() {
 	// 저장된 상태가 없으면 기본 비율 설정 (2:2:6)
 	if !stateRestored {
 		windowWidth := mainWindow.Width()
-		// 비율 2:2:6 = 총 10 파트
 		leftWidth := windowWidth * 2 / 10
 		rightWidth := windowWidth * 6 / 10
 
-		// 왼쪽 dock (Group Navigation)
 		leftDock := groupNavView.Dock()
-
-		// 오른쪽 docks (Charts)
-		rightDocks := chartManager.GetDocks()
-
 		if leftDock != nil {
 			mainWindow.ResizeDocks([]*qt6.QDockWidget{leftDock}, []int{leftWidth}, qt6.Horizontal)
 		}
 
-		if len(rightDocks) > 0 {
-			// 각 차트 dock에 동일한 너비 할당
-			sizes := make([]int, len(rightDocks))
-			for i := range sizes {
-				sizes[i] = rightWidth / len(rightDocks)
+		if cm := getActiveChartManager(); cm != nil {
+			rightDocks := cm.GetDocks()
+			if len(rightDocks) > 0 {
+				sizes := make([]int, len(rightDocks))
+				for i := range sizes {
+					sizes[i] = rightWidth / len(rightDocks)
+				}
+				mainWindow.ResizeDocks(rightDocks, sizes, qt6.Horizontal)
 			}
-			mainWindow.ResizeDocks(rightDocks, sizes, qt6.Horizontal)
 		}
 	}
 

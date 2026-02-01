@@ -118,7 +118,7 @@ func DefaultConfig() Config {
 		MaxElapsed: 5000,
 		TimeRange:  300,
 		MinWidth:   100,
-		MinHeight:  80,
+		MinHeight:  160,
 		PointSize:  4,
 	}
 }

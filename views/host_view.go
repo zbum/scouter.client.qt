@@ -10,14 +10,14 @@ import (
 	"scouter.client.qt/protocol"
 	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 )
 
 // HostView represents the host monitoring view
 type HostView struct {
-	dock            *qt6.QDockWidget
-	objectNameBytes []byte
-	tabWidget       *qt6.QTabWidget
+	dock      *qt6.QDockWidget
+	tabWidget *qt6.QTabWidget
 
 	// Per-host tabs
 	hostTabs map[int32]*HostTab
@@ -66,9 +66,7 @@ func NewHostView(mainWindow *qt6.QMainWindow) *HostView {
 
 	// Create dock widget
 	v.dock = qt6.NewQDockWidget2("Host Monitoring")
-	v.objectNameBytes = []byte("hostMonitoringDock")
-	objectNameView := qt6.NewQAnyStringView2(v.objectNameBytes)
-	v.dock.SetObjectName(*objectNameView)
+	qtutil.SetObjectName(v.dock.QWidget.QObject, "hostMonitoringDock")
 	v.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	// Create tab widget

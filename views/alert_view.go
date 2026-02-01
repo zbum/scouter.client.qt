@@ -8,6 +8,7 @@ import (
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/protocol"
 	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 )
 
@@ -17,8 +18,7 @@ const (
 
 // AlertView represents the Alert dock widget for real-time alerts
 type AlertView struct {
-	dock            *qt6.QDockWidget
-	objectNameBytes []byte
+	dock *qt6.QDockWidget
 
 	// UI components
 	tableWidget   *qt6.QTableWidget
@@ -50,9 +50,7 @@ func NewAlertView(mainWindow *qt6.QMainWindow) *AlertView {
 
 	// Create dock widget
 	v.dock = qt6.NewQDockWidget2("Alerts")
-	v.objectNameBytes = []byte("alertDock")
-	objectNameView := qt6.NewQAnyStringView2(v.objectNameBytes)
-	v.dock.SetObjectName(*objectNameView)
+	qtutil.SetObjectName(v.dock.QWidget.QObject, "alertDock")
 	v.dock.SetAllowedAreas(qt6.TopDockWidgetArea | qt6.BottomDockWidgetArea)
 
 	// Create container

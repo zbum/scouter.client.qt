@@ -3,36 +3,51 @@ package main
 import (
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/dialogs"
+	"scouter.client.qt/perspective"
 )
 
 // MenuManager manages the application menu bar
 type MenuManager struct {
-	menuBar      *qt6.QMenuBar
-	mainWindow   *qt6.QMainWindow
-	chartManager *ChartManager
+	menuBar    *qt6.QMenuBar
+	mainWindow *qt6.QMainWindow
+	perspMgr   *perspective.Manager
 }
 
 // NewMenuManager creates a new menu manager and sets up menus
-func NewMenuManager(mainWindow *qt6.QMainWindow, chartManager *ChartManager) *MenuManager {
+func NewMenuManager(mainWindow *qt6.QMainWindow, perspMgr *perspective.Manager) *MenuManager {
 	mm := &MenuManager{
-		menuBar:      qt6.NewQMenuBar2(),
-		mainWindow:   mainWindow,
-		chartManager: chartManager,
+		menuBar:    qt6.NewQMenuBar2(),
+		mainWindow: mainWindow,
+		perspMgr:   perspMgr,
 	}
 
 	mainWindow.SetMenuBar(mm.menuBar)
 	mm.setupServerMenu()
 	mm.setupChartMenu()
+	mm.setupWindowMenu()
 	mm.setupHelpMenu()
 
 	return mm
+}
+
+// getActiveChartManager returns the active perspective's ChartManager
+func (mm *MenuManager) getActiveChartManager() *ChartManager {
+	p := mm.perspMgr.ActivePerspective()
+	if p == nil {
+		return nil
+	}
+	if sp, ok := p.(*perspective.ServicePerspective); ok {
+		if cm, ok := sp.ChartManager().(*ChartManager); ok {
+			return cm
+		}
+	}
+	return nil
 }
 
 // setupServerMenu creates the Server menu
 func (mm *MenuManager) setupServerMenu() {
 	serverMenu := mm.menuBar.AddMenuWithTitle("Server")
 
-	// Server Manager action
 	manageAction := serverMenu.AddActionWithText("Server Manager...")
 	manageAction.OnTriggered(func() {
 		dlg := dialogs.NewServerListDialog(mm.mainWindow.QWidget)
@@ -41,7 +56,6 @@ func (mm *MenuManager) setupServerMenu() {
 
 	serverMenu.AddSeparator()
 
-	// Add Server action
 	addAction := serverMenu.AddActionWithText("Add Server...")
 	addAction.OnTriggered(func() {
 		dlg := dialogs.NewServerDialog(mm.mainWindow.QWidget)
@@ -49,21 +63,40 @@ func (mm *MenuManager) setupServerMenu() {
 	})
 }
 
-// setupChartMenu creates the Chart menu
+// setupChartMenu creates the View menu
 func (mm *MenuManager) setupChartMenu() {
-	chartMenu := mm.menuBar.AddMenuWithTitle("View")
+	_ = mm.menuBar.AddMenuWithTitle("View")
+}
 
-	// Add Chart action
-	addChartAction := chartMenu.AddActionWithText("Add")
-	addChartAction.OnTriggered(func() {
-		mm.chartManager.AddChart()
+// setupWindowMenu creates the Window menu with perspective management
+func (mm *MenuManager) setupWindowMenu() {
+	windowMenu := mm.menuBar.AddMenuWithTitle("Window")
+
+	newPerspAction := windowMenu.AddActionWithText("New Perspective...")
+	newPerspAction.OnTriggered(func() {
+		ok := false
+		name := qt6.QInputDialog_GetText4(
+			mm.mainWindow.QWidget,
+			"New Perspective",
+			"Name:",
+			qt6.QLineEdit__Normal,
+			"",
+			&ok,
+		)
+		if ok && name != "" {
+			mm.perspMgr.AddPerspective(name)
+		}
 	})
 
-	// Remove Last Chart action
-	removeChartAction := chartMenu.AddActionWithText("Remove Last")
-	removeChartAction.OnTriggered(func() {
-		mm.chartManager.RemoveLastChart()
-	})
+	windowMenu.AddSeparator()
+
+	for _, p := range mm.perspMgr.Perspectives() {
+		pID := p.ID()
+		action := windowMenu.AddActionWithText(p.Name())
+		action.OnTriggered(func() {
+			mm.perspMgr.SetActive(pID)
+		})
+	}
 }
 
 // setupHelpMenu creates the Help menu

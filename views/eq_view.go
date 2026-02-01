@@ -11,6 +11,7 @@ import (
 	"scouter.client.qt/protocol"
 	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 )
 
@@ -238,15 +239,14 @@ func (w *eqWidget) paint() {
 
 // GroupEQView is the dock widget wrapper for the EQ view
 type GroupEQView struct {
-	dock            *qt6.QDockWidget
-	objectNameBytes []byte
-	widget          *eqWidget
-	id              int
-	groupName       string
-	objType         string
-	timer           *qt6.QTimer
-	active          bool
-	lastData        map[int32]ActiveSpeedData // retain previous data until new arrives
+	dock      *qt6.QDockWidget
+	widget    *eqWidget
+	id        int
+	groupName string
+	objType   string
+	timer     *qt6.QTimer
+	active    bool
+	lastData  map[int32]ActiveSpeedData // retain previous data until new arrives
 }
 
 // NewGroupEQView creates a new group EQ dock view
@@ -267,9 +267,8 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 	title := fmt.Sprintf("%s - Active Service EQ", groupName)
 
 	v.dock = qt6.NewQDockWidget2(title)
-	v.objectNameBytes = []byte(fmt.Sprintf("eqDock_%d_%s", id, groupName))
-	objectNameView := qt6.NewQAnyStringView2(v.objectNameBytes)
-	v.dock.SetObjectName(*objectNameView)
+	objectName := fmt.Sprintf("eqDock_%d_%s", id, groupName)
+	qtutil.SetObjectName(v.dock.QWidget.QObject, objectName)
 	v.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	v.widget = newEqWidget(nil)

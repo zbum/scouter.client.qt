@@ -99,7 +99,7 @@ func DefaultConfig() Config {
 		TimeRange:   60,
 		Title:       "Response Time",
 		MinWidth:    100,
-		MinHeight:   80,
+		MinHeight:   160,
 		ShowMarkers: true,
 		ShowLines:   true,
 	}

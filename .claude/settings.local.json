@@ -45,7 +45,12 @@
       "Bash(go run:*)",
       "Bash(CGO_CXXFLAGS=\"-std=c++17\" go run:*)",
       "Bash(./dist/scouter.client:*)",
-      "Bash(GODEBUG=asyncpreemptoff=1 make run:*)"
+      "Bash(GODEBUG=asyncpreemptoff=1 make run:*)",
+      "Bash(tree:*)",
+      "Bash(dmesg:*)",
+      "Bash(log show:*)",
+      "Bash(wait:*)",
+      "Bash(echo:*)"
     ]
   }
 }

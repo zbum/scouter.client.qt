@@ -2,6 +2,7 @@ package treeview
 
 import (
 	"github.com/mappu/miqt/qt6"
+	"scouter.client.qt/qtutil"
 )
 
 // Manager manages the tree view dock widget
@@ -17,8 +18,7 @@ func NewManager(mainWindow *qt6.QMainWindow) *Manager {
 
 	// Create dock widget
 	tm.dock = qt6.NewQDockWidget2("Explorer")
-	objectName := qt6.NewQAnyStringView3("explorerDock")
-	tm.dock.SetObjectName(*objectName)
+	qtutil.SetObjectName(tm.dock.QWidget.QObject, "explorerDock")
 	tm.dock.SetAllowedAreas(qt6.LeftDockWidgetArea | qt6.RightDockWidgetArea)
 
 	// Create tree view

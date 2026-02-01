@@ -14,19 +14,19 @@ import (
 	"scouter.client.qt/protocol"
 	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 )
 
 // View represents the XLog dock widget
 type View struct {
-	dock            *qt6.QDockWidget
-	objectNameBytes []byte
-	chart           *Chart
-	id              int
+	dock  *qt6.QDockWidget
+	chart *Chart
+	id    int
 
 	// Real-time streaming control
-	timer   *qt6.QTimer
-	paused  bool
+	timer  *qt6.QTimer
+	paused bool
 
 	// Group context
 	groupName string
@@ -43,7 +43,6 @@ type View struct {
 
 	// Text cache for resolving hashes
 	textCache *cache.TextCache
-
 }
 
 // NewView creates a new XLog view (standalone, no group context)
@@ -126,9 +125,7 @@ func NewGroupXLogViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objT
 func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 	// Create dock widget
 	v.dock = qt6.NewQDockWidget2(title)
-	v.objectNameBytes = []byte(objectName)
-	objectNameView := qt6.NewQAnyStringView2(v.objectNameBytes)
-	v.dock.SetObjectName(*objectNameView)
+	qtutil.SetObjectName(v.dock.QWidget.QObject, objectName)
 	v.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	// Create container

@@ -10,23 +10,23 @@ import (
 	"scouter.client.qt/protocol"
 	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
+	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
 )
 
 // GroupCounterView displays per-agent counter data as separate lines on one chart
 type GroupCounterView struct {
-	dock            *qt6.QDockWidget
-	objectNameBytes []byte
-	chart           *chart.Widget
-	id              int
-	groupName       string
-	counterName     string
-	counterDisplay  string
-	objType         string
-	maxObserved     int64
-	autoScale       bool
-	timer           *qt6.QTimer
-	active          bool
+	dock           *qt6.QDockWidget
+	chart          *chart.Widget
+	id             int
+	groupName      string
+	counterName    string
+	counterDisplay string
+	objType        string
+	maxObserved    int64
+	autoScale      bool
+	timer          *qt6.QTimer
+	active         bool
 }
 
 // NewGroupCounterView creates a new group counter chart dock widget
@@ -50,9 +50,8 @@ func NewGroupCounterViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, o
 
 	// Create dock widget
 	view.dock = qt6.NewQDockWidget2(title)
-	view.objectNameBytes = []byte(fmt.Sprintf("groupCounterDock_%d_%s_%s", id, groupName, counterName))
-	objectNameView := qt6.NewQAnyStringView2(view.objectNameBytes)
-	view.dock.SetObjectName(*objectNameView)
+	objectName := fmt.Sprintf("groupCounterDock_%d_%s_%s", id, groupName, counterName)
+	qtutil.SetObjectName(view.dock.QWidget.QObject, objectName)
 	view.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	view.setupUI(title)
