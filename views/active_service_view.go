@@ -40,6 +40,7 @@ type ActiveServiceView struct {
 	tableWidget *qt6.QTableWidget
 	filterEdit  *qt6.QLineEdit
 	countLabel  *qt6.QLabel
+	tableItems  [][]*qt6.QTableWidgetItem // retained references to prevent GC
 
 	// Data
 	services   []*ActiveService
@@ -141,7 +142,7 @@ func NewActiveServiceView(mainWindow *qt6.QMainWindow) *ActiveServiceView {
 	v.tableWidget.SetSelectionMode(qt6.QAbstractItemView__SingleSelection)
 	v.tableWidget.SetAlternatingRowColors(true)
 	v.tableWidget.SetEditTriggers(qt6.QAbstractItemView__NoEditTriggers)
-	v.tableWidget.SetSortingEnabled(true)
+	v.tableWidget.SetSortingEnabled(false)
 
 	// Set column widths
 	header := v.tableWidget.HorizontalHeader()
@@ -272,7 +273,7 @@ func NewActiveServiceViewForAgent(mainWindow *qt6.QMainWindow, objHash int32, ob
 	v.tableWidget.SetSelectionMode(qt6.QAbstractItemView__SingleSelection)
 	v.tableWidget.SetAlternatingRowColors(true)
 	v.tableWidget.SetEditTriggers(qt6.QAbstractItemView__NoEditTriggers)
-	v.tableWidget.SetSortingEnabled(true)
+	v.tableWidget.SetSortingEnabled(false)
 
 	header := v.tableWidget.HorizontalHeader()
 	header.SetSectionResizeMode2(0, qt6.QHeaderView__Interactive) // Name
@@ -579,21 +580,29 @@ func (v *ActiveServiceView) refreshTable() {
 		visible = append(visible, visibleSvc{svc, serviceName})
 	}
 
-	log.Printf("[ActiveService] refreshTable: objHash=%d, %d services, %d visible", v.objHash, len(v.services), len(visible))
+	log.Printf("[ActiveService] refreshTable: objHash=%d, %d services, %d visible, currentRows=%d",
+		v.objHash, len(v.services), len(visible), v.tableWidget.RowCount())
 
-	// Suppress repainting while updating table contents
-	v.tableWidget.SetUpdatesEnabled(false)
-	v.tableWidget.SetSortingEnabled(false)
-
-	// Set exact row count (avoids InsertRow/RemoveRow)
-	v.tableWidget.SetRowCount(len(visible))
+	// Adjust row count without clearing existing items
+	currentRows := v.tableWidget.RowCount()
+	newRows := len(visible)
+	if newRows > currentRows {
+		for i := currentRows; i < newRows; i++ {
+			v.tableWidget.InsertRow(i)
+		}
+	} else if newRows < currentRows {
+		for i := currentRows - 1; i >= newRows; i-- {
+			v.tableWidget.RemoveRow(i)
+		}
+		// Trim retained references
+		if newRows < len(v.tableItems) {
+			v.tableItems = v.tableItems[:newRows]
+		}
+	}
 
 	for i, vs := range visible {
 		v.setServiceRow(vs.svc, vs.serviceName, i)
 	}
-
-	v.tableWidget.SetSortingEnabled(true)
-	v.tableWidget.SetUpdatesEnabled(true)
 
 	// Update count label
 	if len(visible) == len(v.services) {
@@ -603,11 +612,17 @@ func (v *ActiveServiceView) refreshTable() {
 	}
 }
 
-// ensureItem returns the existing QTableWidgetItem at (row, col) or creates one
+// ensureItem returns the existing QTableWidgetItem at (row, col) or creates one.
+// Retains a Go-side reference to prevent garbage collection.
 func (v *ActiveServiceView) ensureItem(row, col int) *qt6.QTableWidgetItem {
-	item := v.tableWidget.Item(row, col)
+	// Grow tableItems if needed
+	for len(v.tableItems) <= row {
+		v.tableItems = append(v.tableItems, make([]*qt6.QTableWidgetItem, 7))
+	}
+	item := v.tableItems[row][col]
 	if item == nil {
 		item = qt6.NewQTableWidgetItem2("")
+		v.tableItems[row][col] = item
 		v.tableWidget.SetItem(row, col, item)
 	}
 	return item

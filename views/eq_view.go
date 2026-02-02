@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 
@@ -85,9 +86,9 @@ func (w *eqWidget) paint() {
 	grayColor := qt6.NewQColor3(128, 128, 128)
 	dimColor := qt6.NewQColor3(100, 100, 100)
 	darkColor := qt6.NewQColor3(80, 80, 80)
-	colorAct1 := qt6.NewQColor3(59, 130, 246)  // blue (normal)
-	colorAct2 := qt6.NewQColor3(234, 179, 8)   // yellow (slow)
-	colorAct3 := qt6.NewQColor3(239, 68, 68)   // red (very slow)
+	colorAct1 := qt6.NewQColor3(59, 130, 246) // blue (normal)
+	colorAct2 := qt6.NewQColor3(234, 179, 8)  // yellow (slow)
+	colorAct3 := qt6.NewQColor3(239, 68, 68)  // red (very slow)
 	bgNameColor := qt6.NewQColor3(200, 200, 200)
 	rowBorderColor := qt6.NewQColor3(220, 220, 220)
 
@@ -250,6 +251,12 @@ type GroupEQView struct {
 	active             bool
 	lastData           map[int32]ActiveSpeedData // retain previous data until new arrives
 	onAgentDoubleClick func(objHash int32, objType string)
+
+	// Background fetch state
+	fetchMu     sync.Mutex
+	fetching    bool
+	dirty       bool
+	pendingData []EqData
 }
 
 // NewGroupEQView creates a new group EQ dock view
@@ -311,9 +318,12 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 	// 2-second polling timer
 	v.timer = qt6.NewQTimer()
 	v.timer.OnTimeout(func() {
-		v.fetchAndUpdate()
+		v.tick()
 	})
 	v.timer.Start(2000)
+
+	// Initial fetch
+	v.startFetch()
 
 	// Handle dock visibility
 	v.dock.OnVisibilityChanged(func(visible bool) {
@@ -336,10 +346,48 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 	return v
 }
 
-// fetchAndUpdate fetches active speed data and updates the widget
-func (v *GroupEQView) fetchAndUpdate() {
+// tick is called by the timer on the main thread.
+// It applies pending data if available, then kicks off the next background fetch.
+func (v *GroupEQView) tick() {
+	v.fetchMu.Lock()
+	if v.dirty {
+		v.dirty = false
+		data := v.pendingData
+		v.pendingData = nil
+		v.fetchMu.Unlock()
+		if len(data) > 0 {
+			v.widget.setData(data)
+		}
+	} else {
+		v.fetchMu.Unlock()
+	}
+	v.startFetch()
+}
+
+// startFetch launches a background goroutine to fetch data (if not already fetching)
+func (v *GroupEQView) startFetch() {
+	v.fetchMu.Lock()
+	if v.fetching {
+		v.fetchMu.Unlock()
+		return
+	}
+	v.fetching = true
+	v.fetchMu.Unlock()
+
+	go v.doFetch()
+}
+
+// doFetch fetches active speed data in the background
+func (v *GroupEQView) doFetch() {
+	defer func() {
+		v.fetchMu.Lock()
+		v.fetching = false
+		v.fetchMu.Unlock()
+	}()
+
 	members := groupnav.GetManager().GetObjectsByGroup(v.groupName)
 	if len(members) == 0 {
+		log.Printf("[EQ:%s] no members in group", v.groupName)
 		return
 	}
 
@@ -384,9 +432,19 @@ func (v *GroupEQView) fetchAndUpdate() {
 		})
 	}
 
-	// Merge new results into lastData (keep previous for agents that didn't respond)
+	log.Printf("[EQ:%s] fetched %d results for %d members", v.groupName, len(results), len(members))
+
+	// Merge new results into lastData
+	// Only overwrite with zeros if agent didn't respond at all;
+	// keep previous non-zero values when server returns zeros (counter cache gap)
 	for hash, speed := range results {
-		v.lastData[hash] = speed
+		total := speed.Act1 + speed.Act2 + speed.Act3
+		if total > 0 {
+			v.lastData[hash] = speed
+		} else if _, exists := v.lastData[hash]; !exists {
+			v.lastData[hash] = speed
+		}
+		// If total==0 and we already have data, keep previous non-zero values
 	}
 
 	// Remove agents no longer in the group
@@ -423,7 +481,16 @@ func (v *GroupEQView) fetchAndUpdate() {
 		return eqData[i].DisplayName < eqData[j].DisplayName
 	})
 
-	v.widget.setData(eqData)
+	log.Printf("[EQ:%s] setting %d agents data", v.groupName, len(eqData))
+	for _, d := range eqData {
+		log.Printf("[EQ:%s]   %s: act1=%d act2=%d act3=%d alive=%v",
+			v.groupName, d.DisplayName, d.Speed.Act1, d.Speed.Act2, d.Speed.Act3, d.Alive)
+	}
+
+	v.fetchMu.Lock()
+	v.pendingData = eqData
+	v.dirty = true
+	v.fetchMu.Unlock()
 }
 
 // Dock returns the underlying dock widget
