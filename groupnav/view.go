@@ -96,6 +96,9 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 	v.groupTreeView.SetRootIsDecorated(true)
 	v.groupTreeView.SetAlternatingRowColors(true)
 	v.groupTreeView.SetSelectionMode(qt6.QAbstractItemView__SingleSelection)
+	groupFont := v.groupTreeView.Font()
+	groupFont.SetPointSize(10)
+	v.groupTreeView.SetFont(groupFont)
 
 	v.groupModel = qt6.NewQStandardItemModel2(0, 2)
 	groupHeaderLabels := []string{"Group/Object", "Perf"}
@@ -121,6 +124,9 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 	v.objectTreeView.SetRootIsDecorated(true)
 	v.objectTreeView.SetAlternatingRowColors(true)
 	v.objectTreeView.SetSelectionMode(qt6.QAbstractItemView__SingleSelection)
+	objectFont := v.objectTreeView.Font()
+	objectFont.SetPointSize(10)
+	v.objectTreeView.SetFont(objectFont)
 
 	v.objectModel = qt6.NewQStandardItemModel2(0, 2)
 	objectHeaderLabels := []string{"Server/Object", "Perf"}

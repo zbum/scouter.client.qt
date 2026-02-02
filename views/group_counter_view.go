@@ -2,6 +2,8 @@ package views
 
 import (
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/cache"
@@ -27,6 +29,7 @@ type GroupCounterView struct {
 	autoScale      bool
 	timer          *qt6.QTimer
 	active         bool
+	lastFetchTime  time.Time
 }
 
 // NewGroupCounterView creates a new group counter chart dock widget
@@ -63,7 +66,7 @@ func NewGroupCounterViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, o
 	})
 	view.timer.Start(2000)
 
-	// Handle dock close
+	// Handle dock visibility (perspective switching)
 	view.dock.OnVisibilityChanged(func(visible bool) {
 		if !visible {
 			view.active = false
@@ -72,6 +75,10 @@ func NewGroupCounterViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, o
 			}
 		} else if !view.active {
 			view.active = true
+			// Backfill gap if we were hidden for more than 4 seconds
+			if !view.lastFetchTime.IsZero() && time.Since(view.lastFetchTime) > 4*time.Second {
+				view.backfillPastData()
+			}
 			if view.timer != nil {
 				view.timer.Start(2000)
 			}
@@ -177,6 +184,8 @@ func (v *GroupCounterView) fetchAndUpdate() {
 		return
 	}
 
+	v.lastFetchTime = time.Now()
+
 	// Add each agent's value as a separate series point
 	var maxVal int64
 	for hash, val := range values {
@@ -190,15 +199,83 @@ func (v *GroupCounterView) fetchAndUpdate() {
 		}
 	}
 
-	// Auto-scale Y-axis based on max across all agents
-	if v.autoScale && maxVal > v.maxObserved {
-		v.maxObserved = maxVal
-		newMax := ((v.maxObserved * 12 / 10) / 100) * 100
+	// Auto-scale Y-axis based on visible data max
+	if v.autoScale {
+		visibleMax := v.chart.VisibleSeriesMax()
+		newMax := ((visibleMax * 12 / 10) / 100) * 100
 		if newMax < 100 {
 			newMax = 100
 		}
-		v.chart.SetMaxValue(newMax)
+		if newMax != v.maxObserved {
+			v.maxObserved = newMax
+			v.chart.SetMaxValue(newMax)
+		}
 	}
+}
+
+// backfillPastData fetches historical counter data for the gap period
+func (v *GroupCounterView) backfillPastData() {
+	members := groupnav.GetManager().GetObjectsByGroup(v.groupName)
+	if len(members) == 0 {
+		return
+	}
+
+	objHashList := &io.ListValue{}
+	for hash := range members {
+		objHashList.Add(io.NewDecimalValue(int32(hash)))
+	}
+
+	servers := server.GetManager().GetConnectedServers()
+	if len(servers) == 0 {
+		return
+	}
+
+	stime := v.lastFetchTime.UnixMilli()
+	etime := time.Now().UnixMilli()
+
+	for _, srv := range servers {
+		session := srv.Session()
+		if session == nil {
+			continue
+		}
+
+		param := pack.NewMapPack()
+		param.PutText(protocol.ParamCounter, v.counterName)
+		param.Put(protocol.ParamObjHash, objHashList)
+		param.PutDecimalLong(protocol.ParamFromTime, stime)
+		param.PutDecimalLong(protocol.ParamToTime, etime)
+
+		session.RequestStream(protocol.CMD_COUNTER_PAST_TIME_GROUP, param, func(p pack.Pack) bool {
+			mp, ok := p.(*pack.MapPack)
+			if !ok {
+				return true
+			}
+
+			objHash := mp.GetDecimal("objHash")
+			timeLv := mp.GetListValue("time")
+			valueLv := mp.GetListValue("value")
+			if timeLv == nil || valueLv == nil {
+				return true
+			}
+
+			name := cache.GetObjectCache().GetObjName(objHash)
+			if name == "" {
+				name = fmt.Sprintf("obj-%d", objHash)
+			}
+
+			for i := 0; i < timeLv.Size(); i++ {
+				ts := timeLv.GetInt64(i)
+				val := valueLv.Get(i)
+				if val == nil {
+					continue
+				}
+				v.chart.AddSeriesPointAt(name, int64(valueToFloat64(val)), time.UnixMilli(ts))
+			}
+			return true
+		})
+	}
+
+	log.Printf("[GroupCounter] backfilled %s from %v to %v", v.counterName, v.lastFetchTime.Format("15:04:05"), time.Now().Format("15:04:05"))
 }
 
 // valueToFloat64 converts an io.Value to float64

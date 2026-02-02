@@ -54,7 +54,7 @@ func (d *ManageGroupDialog) setupUI() {
 	// Title label
 	titleLabel := qt6.NewQLabel3(d.groupName + " (" + d.objType + ")")
 	titleFont := titleLabel.Font()
-	titleFont.SetPointSize(12)
+	titleFont.SetPointSize(10)
 	titleFont.SetBold(true)
 	titleLabel.SetFont(titleFont)
 	mainLayout.AddWidget(titleLabel.QWidget)

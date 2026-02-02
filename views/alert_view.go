@@ -51,7 +51,7 @@ func NewAlertView(mainWindow *qt6.QMainWindow) *AlertView {
 	// Create dock widget
 	v.dock = qt6.NewQDockWidget2("Alerts")
 	qtutil.SetObjectName(v.dock.QWidget.QObject, "alertDock")
-	v.dock.SetAllowedAreas(qt6.TopDockWidgetArea | qt6.BottomDockWidgetArea)
+	v.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
 	// Create container
 	container := qt6.NewQWidget2()
@@ -137,8 +137,8 @@ func NewAlertView(mainWindow *qt6.QMainWindow) *AlertView {
 
 	v.dock.SetWidget(container)
 
-	// Add to main window
-	mainWindow.AddDockWidget(qt6.BottomDockWidgetArea, v.dock)
+	// Add to main window below the given reference dock (groupnav)
+	mainWindow.AddDockWidget(qt6.LeftDockWidgetArea, v.dock)
 
 	// Start streaming from connected servers
 	go v.startStreaming()

@@ -285,6 +285,52 @@ func (c *Widget) AddSeriesPoint(name string, value int64) {
 	c.widget.Update()
 }
 
+// AddSeriesPointAt adds a data point to a named series at a specific timestamp (for backfill)
+func (c *Widget) AddSeriesPointAt(name string, value int64, timestamp time.Time) {
+	s := c.AddSeries(name)
+	dp := DataPoint{Timestamp: timestamp, Value: value}
+
+	// Insert in sorted order by timestamp
+	idx := len(s.DataPoints)
+	for idx > 0 && s.DataPoints[idx-1].Timestamp.After(timestamp) {
+		idx--
+	}
+	if idx == len(s.DataPoints) {
+		s.DataPoints = append(s.DataPoints, dp)
+	} else {
+		s.DataPoints = append(s.DataPoints, DataPoint{})
+		copy(s.DataPoints[idx+1:], s.DataPoints[idx:])
+		s.DataPoints[idx] = dp
+	}
+
+	if len(s.DataPoints) > c.config.MaxPoints {
+		s.DataPoints = s.DataPoints[len(s.DataPoints)-c.config.MaxPoints:]
+	}
+	c.widget.Update()
+}
+
+// VisibleSeriesMax returns the maximum value across all series within the visible time range
+func (c *Widget) VisibleSeriesMax() int64 {
+	now := time.Now()
+	cutoff := now.Add(-time.Duration(c.config.TimeRange) * time.Second)
+	var max int64
+	for _, name := range c.seriesOrder {
+		s, ok := c.series[name]
+		if !ok {
+			continue
+		}
+		for _, dp := range s.DataPoints {
+			if dp.Timestamp.Before(cutoff) {
+				continue
+			}
+			if dp.Value > max {
+				max = dp.Value
+			}
+		}
+	}
+	return max
+}
+
 // ClearAllSeries removes all series data
 func (c *Widget) ClearAllSeries() {
 	c.series = nil
@@ -299,6 +345,11 @@ func (c *Widget) paint() {
 
 	painter.SetRenderHint(qt6.QPainter__Antialiasing)
 
+	// Set font size for axis labels
+	scaleFont := painter.Font()
+	scaleFont.SetPointSize(10)
+	painter.SetFont(scaleFont)
+
 	// Get theme colors
 	theme := getThemeColors()
 
@@ -306,10 +357,10 @@ func (c *Widget) paint() {
 	height := c.widget.Height()
 
 	// Margins
-	marginLeft := 50
-	marginRight := 20
-	marginTop := 20
-	marginBottom := 40
+	marginLeft := 40
+	marginRight := 10
+	marginTop := 5
+	marginBottom := 17
 
 	chartWidth := width - marginLeft - marginRight
 	chartHeight := height - marginTop - marginBottom

@@ -664,7 +664,7 @@ func main() {
 	})
 
 	// 메뉴 매니저 생성
-	_ = NewMenuManager(mainWindow, perspMgr)
+	menuMgr := NewMenuManager(mainWindow, perspMgr, groupNavView.Dock())
 
 	// 저장된 상태가 없으면 기본 차트 4개 추가
 	if !stateRestored {
@@ -699,6 +699,9 @@ func main() {
 
 	// 창 닫을 때 perspective 상태 저장
 	mainWindow.OnCloseEvent(func(super func(event *qt6.QCloseEvent), event *qt6.QCloseEvent) {
+		// Alert View 스트리밍 고루틴 정리
+		menuMgr.StopAlertView()
+
 		// Save navigation tree state
 		appSettings.NavCollapsedItems = groupNavView.GetCollapsedItems()
 		appSettings.NavActiveTab = groupNavView.GetActiveTab()

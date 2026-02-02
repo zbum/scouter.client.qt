@@ -93,7 +93,7 @@ func NewGroupXLogViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objT
 	})
 	v.fetchTimer.Start(2000)
 
-	// Handle dock visibility toggle
+	// Handle dock visibility toggle (perspective switching)
 	v.dock.OnVisibilityChanged(func(visible bool) {
 		if !visible {
 			v.active = false
@@ -102,6 +102,8 @@ func NewGroupXLogViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objT
 			}
 		} else if !v.active {
 			v.active = true
+			// Immediately fetch to recover cursor-based data from the gap period
+			v.fetchAndUpdate()
 			if v.fetchTimer != nil {
 				v.fetchTimer.Start(2000)
 			}
@@ -196,6 +198,9 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 	})
 	v.chart.SetOnRangeSelected(func(points []XLogPoint) {
 		v.handleRangeSelected(points)
+	})
+	v.chart.SetOnNeedPastData(func(stime, etime time.Time) {
+		v.loadPastXLog(stime, etime)
 	})
 	layout.AddWidget(v.chart.QWidget())
 
@@ -350,6 +355,67 @@ func (v *View) AddXLog(xlog *pack.XLogPack, serverID int) {
 	v.chart.AddPoint(point)
 }
 
+
+// loadPastXLog fetches historical XLog data for the given time range
+func (v *View) loadPastXLog(stime, etime time.Time) {
+	if v.groupName == "" {
+		return
+	}
+
+	members := groupnav.GetManager().GetObjectsByGroup(v.groupName)
+	if len(members) == 0 {
+		return
+	}
+
+	objHashList := &io.ListValue{}
+	for hash := range members {
+		objHashList.Add(io.NewDecimalValue(int32(hash)))
+	}
+
+	servers := server.GetManager().GetConnectedServers()
+	if len(servers) == 0 {
+		return
+	}
+
+	type serverInfo struct {
+		id      int
+		session *net.Session
+	}
+	var srvList []serverInfo
+	for _, srv := range servers {
+		s := srv.Session()
+		if s != nil && s.Proxy() != nil && s.Proxy().SessionID() != 0 {
+			srvList = append(srvList, serverInfo{id: srv.ID, session: s})
+		}
+	}
+	if len(srvList) == 0 {
+		return
+	}
+
+	date := stime.Format("20060102")
+	stimeMs := stime.UnixMilli()
+	etimeMs := etime.UnixMilli()
+
+	go func() {
+		for _, srv := range srvList {
+			param := pack.NewMapPack()
+			param.PutText("date", date)
+			param.PutDecimalLong(protocol.ParamFromTime, stimeMs)
+			param.PutDecimalLong(protocol.ParamToTime, etimeMs)
+			param.Put(protocol.ParamObjHash, objHashList)
+
+			err := srv.session.RequestStream(protocol.CMD_TRANX_LOAD_TIME_GROUP, param, func(p pack.Pack) bool {
+				if xp, ok := p.(*pack.XLogPack); ok {
+					v.AddXLog(xp, srv.id)
+				}
+				return true
+			})
+			if err != nil {
+				log.Printf("[XLog] past load srv=%d error: %v", srv.id, err)
+			}
+		}
+	}()
+}
 
 // Close stops timers and cleans up
 func (v *View) Close() {

@@ -119,7 +119,7 @@ func DefaultConfig() Config {
 		TimeRange:  300,
 		MinWidth:   100,
 		MinHeight:  160,
-		PointSize:  4,
+		PointSize:  3,
 	}
 }
 
@@ -137,12 +137,16 @@ type Chart struct {
 	selectEndY    int
 	selectedTxIDs map[int64]bool
 
+	// De-duplication: track known TxIDs
+	knownTxIDs map[int64]bool
+
 	// X-axis time offset (seconds, positive = looking at past)
 	timeOffset int
 
 	// Callbacks
-	onPointSelected func(point XLogPoint)
-	onRangeSelected func(points []XLogPoint)
+	onPointSelected  func(point XLogPoint)
+	onRangeSelected  func(points []XLogPoint)
+	onNeedPastData   func(stime, etime time.Time)
 
 	mu           sync.RWMutex
 	needsRepaint atomic.Bool // Set from goroutine, consumed by main-thread timer
@@ -159,6 +163,7 @@ func NewChartWithConfig(parent *qt6.QWidget, config Config) *Chart {
 		widget:        qt6.NewQWidget(parent),
 		config:        config,
 		selectedTxIDs: make(map[int64]bool),
+		knownTxIDs:    make(map[int64]bool),
 	}
 
 	c.widget.SetMinimumSize2(config.MinWidth, config.MinHeight)
@@ -235,6 +240,12 @@ func (c *Chart) handleKeyPress(event *qt6.QKeyEvent) {
 		}
 		c.timeOffset += step
 		c.widget.Update()
+		// Request past data for the newly visible time range
+		if c.onNeedPastData != nil {
+			viewEnd := time.Now().Add(-time.Duration(c.timeOffset-step) * time.Second)
+			viewStart := time.Now().Add(-time.Duration(c.timeOffset+c.config.TimeRange) * time.Second)
+			c.onNeedPastData(viewStart, viewEnd)
+		}
 	case qt6.Key_Right:
 		// Move X-axis to present
 		step := c.config.TimeRange / 4
@@ -249,11 +260,16 @@ func (c *Chart) handleKeyPress(event *qt6.QKeyEvent) {
 	}
 }
 
-// AddPoint adds a transaction point to the chart (thread-safe, no Qt calls)
+// AddPoint adds a transaction point to the chart (thread-safe, no Qt calls).
+// Duplicate TxIDs are silently ignored.
 func (c *Chart) AddPoint(point XLogPoint) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.knownTxIDs[point.TxID] {
+		return
+	}
+	c.knownTxIDs[point.TxID] = true
 	c.points = append(c.points, point)
 	c.needsRepaint.Store(true)
 }
@@ -282,6 +298,7 @@ func (c *Chart) Clear() {
 
 	c.points = nil
 	c.selectedTxIDs = make(map[int64]bool)
+	c.knownTxIDs = make(map[int64]bool)
 	c.widget.Update()
 }
 
@@ -295,6 +312,8 @@ func (c *Chart) ClearOldPoints() {
 	for _, p := range c.points {
 		if p.EndTime.After(cutoff) {
 			newPoints = append(newPoints, p)
+		} else {
+			delete(c.knownTxIDs, p.TxID)
 		}
 	}
 	c.points = newPoints
@@ -323,11 +342,21 @@ func (c *Chart) SetOnRangeSelected(callback func(points []XLogPoint)) {
 	c.onRangeSelected = callback
 }
 
+// SetOnNeedPastData sets a callback invoked when the chart scrolls to a time range needing data
+func (c *Chart) SetOnNeedPastData(callback func(stime, etime time.Time)) {
+	c.onNeedPastData = callback
+}
+
 func (c *Chart) paint() {
 	painter := qt6.NewQPainter2(c.widget.QPaintDevice)
 	defer painter.Delete()
 
 	painter.SetRenderHint(qt6.QPainter__Antialiasing)
+
+	// Set font size for axis labels
+	scaleFont := painter.Font()
+	scaleFont.SetPointSize(10)
+	painter.SetFont(scaleFont)
 
 	theme := getThemeColors()
 	width := c.widget.Width()
@@ -349,6 +378,9 @@ func (c *Chart) paint() {
 	// Draw grid
 	c.drawGrid(painter, theme, marginLeft, marginTop, chartWidth, chartHeight)
 
+	// Clip drawing to chart area so points don't overflow boundaries
+	painter.SetClipRect2(marginLeft, marginTop, chartWidth, chartHeight)
+
 	// Draw points
 	c.drawPoints(painter, theme, marginLeft, marginTop, chartWidth, chartHeight)
 
@@ -356,6 +388,9 @@ func (c *Chart) paint() {
 	if c.selecting {
 		c.drawSelection(painter, theme)
 	}
+
+	// Remove clip for axes drawing
+	painter.SetClipping(false)
 
 	// Draw axes labels
 	c.drawAxes(painter, theme, marginLeft, marginTop, chartWidth, chartHeight, height)
