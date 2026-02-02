@@ -26,20 +26,21 @@ const appName = "scouter.client.go"
 
 // ChartManager manages multiple chart dock widgets
 type ChartManager struct {
-	mainWindow      *qt6.QMainWindow
-	charts          []*ChartDock
-	groupCharts     []*views.GroupCounterView
-	xlogViews       []*xlog.View
-	eqViews         []*views.GroupEQView
-	chartCount      int
-	groupChartCount int
-	xlogCount       int
-	eqCount         int
-	timer           *qt6.QTimer
-	onStateChanged  func() // Callback when dock state changes
-	isRestoring     bool   // Flag to prevent saving during restore
-	appSettings     *settings.AppSettings
-	dockPrefix      string // Unique prefix for dock object names per perspective
+	mainWindow         *qt6.QMainWindow
+	charts             []*ChartDock
+	groupCharts        []*views.GroupCounterView
+	xlogViews          []*xlog.View
+	eqViews            []*views.GroupEQView
+	activeServiceViews []*views.ActiveServiceView
+	chartCount         int
+	groupChartCount    int
+	xlogCount          int
+	eqCount            int
+	timer              *qt6.QTimer
+	onStateChanged     func() // Callback when dock state changes
+	isRestoring        bool   // Flag to prevent saving during restore
+	appSettings        *settings.AppSettings
+	dockPrefix         string // Unique prefix for dock object names per perspective
 }
 
 // ChartDock holds a chart widget and its dock
@@ -258,6 +259,11 @@ func (cm *ChartManager) addEQViewWithID(id int, groupName, objType string) *view
 		cm.eqCount = id
 	}
 
+	// Double-click an agent bar → open Active Service List for that agent
+	ev.SetOnAgentDoubleClick(func(objHash int32, objType string) {
+		cm.openActiveServiceForAgent(objHash, objType)
+	})
+
 	dock := ev.Dock()
 	cm.setDockObjectName(dock, fmt.Sprintf("%s_eqDock_%d_%s", cm.dockPrefix, id, groupName))
 	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
@@ -273,6 +279,29 @@ func (cm *ChartManager) addEQViewWithID(id int, groupName, objType string) *view
 	cm.redistributeDockHeights()
 	cm.notifyStateChanged()
 	return ev
+}
+
+// openActiveServiceForAgent opens an Active Service List dock for a specific agent
+func (cm *ChartManager) openActiveServiceForAgent(objHash int32, objType string) {
+	// If a view for this agent already exists, just show/raise it
+	for _, asv := range cm.activeServiceViews {
+		if asv.ObjHash() == objHash {
+			asv.Dock().Show()
+			asv.Dock().Raise()
+			return
+		}
+	}
+
+	// Find the server ID for this agent
+	serverId := 0
+	servers := server.GetManager().GetConnectedServers()
+	for _, srv := range servers {
+		serverId = srv.ID
+		break
+	}
+
+	asv := views.NewActiveServiceViewForAgent(cm.mainWindow, objHash, objType, serverId)
+	cm.activeServiceViews = append(cm.activeServiceViews, asv)
 }
 
 // AddDefaultCharts is a no-op. New perspectives start empty;
@@ -423,14 +452,6 @@ func (cm *ChartManager) redistributeDockHeights() {
 		sizes[i] = 200
 	}
 	cm.mainWindow.ResizeDocks(visible, sizes, qt6.Vertical)
-
-	// Set width to 1/3 of window
-	targetWidth := cm.mainWindow.Width() / 3
-	widths := make([]int, len(visible))
-	for i := range widths {
-		widths[i] = targetWidth
-	}
-	cm.mainWindow.ResizeDocks(visible, widths, qt6.Horizontal)
 }
 
 // ShowAllDocks shows all dock widgets
@@ -465,10 +486,15 @@ func (cm *ChartManager) Destroy() {
 		ev.Close()
 		ev.Dock().DeleteLater()
 	}
+	for _, asv := range cm.activeServiceViews {
+		asv.Stop()
+		asv.Dock().DeleteLater()
+	}
 	cm.charts = nil
 	cm.groupCharts = nil
 	cm.xlogViews = nil
 	cm.eqViews = nil
+	cm.activeServiceViews = nil
 }
 
 func main() {

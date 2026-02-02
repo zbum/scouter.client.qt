@@ -126,8 +126,9 @@ type AgentObject struct {
 	objType       string
 	serverId      int
 	alive         bool
-	masterCounter string
-	address       string
+	masterCounter    string
+	masterCounterRaw float64
+	address          string
 	version       string
 }
 
@@ -186,6 +187,14 @@ func (a *AgentObject) GetMasterCounter() string {
 
 func (a *AgentObject) SetMasterCounter(value string) {
 	a.masterCounter = value
+}
+
+func (a *AgentObject) GetMasterCounterRaw() float64 {
+	return a.masterCounterRaw
+}
+
+func (a *AgentObject) SetMasterCounterRaw(value float64) {
+	a.masterCounterRaw = value
 }
 
 func (a *AgentObject) GetAddress() string {

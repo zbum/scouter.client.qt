@@ -40,8 +40,9 @@ type EqData struct {
 // eqWidget is the custom-painted EQ widget
 type eqWidget struct {
 	*qt6.QWidget
-	mu   sync.RWMutex
-	data []EqData
+	mu    sync.RWMutex
+	data  []EqData
+	unitH int // cached row height from last paint
 }
 
 func newEqWidget(parent *qt6.QWidget) *eqWidget {
@@ -105,6 +106,7 @@ func (w *eqWidget) paint() {
 	if unitH < 20 {
 		unitH = 20
 	}
+	w.unitH = unitH
 
 	// Find max total across all rows for scale
 	var maxTotal int32
@@ -239,14 +241,15 @@ func (w *eqWidget) paint() {
 
 // GroupEQView is the dock widget wrapper for the EQ view
 type GroupEQView struct {
-	dock      *qt6.QDockWidget
-	widget    *eqWidget
-	id        int
-	groupName string
-	objType   string
-	timer     *qt6.QTimer
-	active    bool
-	lastData  map[int32]ActiveSpeedData // retain previous data until new arrives
+	dock               *qt6.QDockWidget
+	widget             *eqWidget
+	id                 int
+	groupName          string
+	objType            string
+	timer              *qt6.QTimer
+	active             bool
+	lastData           map[int32]ActiveSpeedData // retain previous data until new arrives
+	onAgentDoubleClick func(objHash int32, objType string)
 }
 
 // NewGroupEQView creates a new group EQ dock view
@@ -273,6 +276,37 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 
 	v.widget = newEqWidget(nil)
 	v.dock.SetWidget(v.widget.QWidget)
+
+	// Double-click handler: identify the agent bar that was clicked
+	v.widget.QWidget.OnMouseDoubleClickEvent(func(super func(event *qt6.QMouseEvent), event *qt6.QMouseEvent) {
+		super(event)
+		if v.onAgentDoubleClick == nil {
+			return
+		}
+		pos := event.Pos()
+		y := pos.Y()
+		unitH := v.widget.unitH
+		if unitH == 0 {
+			return
+		}
+		if y <= eqAxisPad {
+			return
+		}
+		v.widget.mu.RLock()
+		data := make([]EqData, len(v.widget.data))
+		copy(data, v.widget.data)
+		v.widget.mu.RUnlock()
+
+		index := (y - eqAxisPad) / unitH
+		if index < 0 || index >= len(data) {
+			return
+		}
+		d := data[index]
+		if !d.Alive {
+			return
+		}
+		v.onAgentDoubleClick(d.ObjHash, v.objType)
+	})
 
 	// 2-second polling timer
 	v.timer = qt6.NewQTimer()
@@ -403,6 +437,11 @@ func (v *GroupEQView) GroupName() string { return v.groupName }
 
 // ObjType returns the object type
 func (v *GroupEQView) ObjType() string { return v.objType }
+
+// SetOnAgentDoubleClick sets the callback for double-clicking an agent bar
+func (v *GroupEQView) SetOnAgentDoubleClick(cb func(objHash int32, objType string)) {
+	v.onAgentDoubleClick = cb
+}
 
 // Close closes the view and cleans up
 func (v *GroupEQView) Close() {

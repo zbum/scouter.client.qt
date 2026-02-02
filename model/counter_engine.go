@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"scouter.client.qt/net"
 	"scouter.client.qt/protocol"
 	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
@@ -169,13 +170,7 @@ func (e *CounterEngine) getSubscribedCounters() map[string]bool {
 
 // fetchCounter fetches a specific counter from a session
 func (e *CounterEngine) fetchCounter(session interface{}, counter string) {
-	// Type assertion for session interface
-	type sessionInterface interface {
-		Request(cmd string, param *pack.MapPack) (*pack.MapPack, error)
-		RequestStream(cmd string, param *pack.MapPack, callback func(pack.Pack) bool) error
-	}
-
-	s, ok := session.(sessionInterface)
+	s, ok := session.(*net.Session)
 	if !ok {
 		return
 	}
