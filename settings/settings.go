@@ -71,12 +71,17 @@ type AppSettings struct {
 	Perspectives      map[string]*PerspectiveState `json:"perspectives,omitempty"`
 }
 
-// getPath returns the settings file path
-func getPath() string {
+// ConfigDirPath returns the config directory path
+func ConfigDirPath() string {
 	homeDir, _ := os.UserHomeDir()
 	dir := filepath.Join(homeDir, ".config", configDir)
 	os.MkdirAll(dir, 0755)
-	return filepath.Join(dir, configFile)
+	return dir
+}
+
+// getPath returns the settings file path
+func getPath() string {
+	return filepath.Join(ConfigDirPath(), configFile)
 }
 
 // Load loads settings from the JSON file

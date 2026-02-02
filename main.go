@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"syscall"
 	"time"
 
 	"scouter.client.qt/assets"
@@ -453,12 +454,15 @@ func (cm *ChartManager) Destroy() {
 		cd.dock.DeleteLater()
 	}
 	for _, gcv := range cm.groupCharts {
+		gcv.Close()
 		gcv.Dock().DeleteLater()
 	}
 	for _, xv := range cm.xlogViews {
+		xv.Close()
 		xv.Dock().DeleteLater()
 	}
 	for _, ev := range cm.eqViews {
+		ev.Close()
 		ev.Dock().DeleteLater()
 	}
 	cm.charts = nil
@@ -531,9 +535,12 @@ func main() {
 	// Perspective Manager 생성 (factory set below after saveWindowState is defined)
 	var perspMgr *perspective.Manager
 
+	// Import 후 상태 저장 방지 플래그
+	skipSave := false
+
 	// 상태 저장 함수
 	saveWindowState := func() {
-		if perspMgr != nil && !perspMgr.IsSwitching() {
+		if perspMgr != nil && !perspMgr.IsSwitching() && !skipSave {
 			perspMgr.SaveCurrentState()
 			appSettings.Save()
 		}
@@ -666,6 +673,28 @@ func main() {
 	// 메뉴 매니저 생성
 	menuMgr := NewMenuManager(mainWindow, perspMgr, groupNavView.Dock())
 
+	// Export 전 현재 앱 상태 저장 콜백
+	menuMgr.SetOnBeforeExport(func() {
+		appSettings.NavCollapsedItems = groupNavView.GetCollapsedItems()
+		appSettings.NavActiveTab = groupNavView.GetActiveTab()
+		perspMgr.SaveAllStates()
+		appSettings.Save()
+	})
+
+	// Import 후 자동 재시작 콜백
+	menuMgr.SetOnAfterImport(func() {
+		skipSave = true
+		exe, err := os.Executable()
+		if err != nil {
+			qt6.QMessageBox_Information(mainWindow.QWidget, "Import Settings",
+				"Settings imported successfully.\nPlease restart the application to apply.")
+			return
+		}
+		qt6.QMessageBox_Information(mainWindow.QWidget, "Import Settings",
+			"Settings imported successfully.\nThe application will restart now.")
+		syscall.Exec(exe, os.Args, os.Environ())
+	})
+
 	// 저장된 상태가 없으면 기본 차트 4개 추가
 	if !stateRestored {
 		if p := perspMgr.Perspectives()[0]; p != nil {
@@ -702,12 +731,14 @@ func main() {
 		// Alert View 스트리밍 고루틴 정리
 		menuMgr.StopAlertView()
 
-		// Save navigation tree state
-		appSettings.NavCollapsedItems = groupNavView.GetCollapsedItems()
-		appSettings.NavActiveTab = groupNavView.GetActiveTab()
+		// Import 후에는 저장하지 않음 (imported 파일을 덮어쓰지 않도록)
+		if !skipSave {
+			appSettings.NavCollapsedItems = groupNavView.GetCollapsedItems()
+			appSettings.NavActiveTab = groupNavView.GetActiveTab()
 
-		perspMgr.SaveAllStates()
-		appSettings.Save()
+			perspMgr.SaveAllStates()
+			appSettings.Save()
+		}
 		super(event)
 	})
 

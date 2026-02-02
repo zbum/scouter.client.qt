@@ -708,6 +708,9 @@ func (v *View) addToGroupModel(obj HierarchyObject, parent *qt6.QStandardItem) {
 	case *GroupObject:
 		nameItem = qt6.NewQStandardItem2(o.GetName())
 		nameItem.SetEditable(false)
+		if icon := GetObjectIcon(o.GetObjType(), true); icon != nil {
+			nameItem.SetIcon(icon)
+		}
 		perfItem = qt6.NewQStandardItem()
 		perfItem.SetEditable(false)
 
@@ -720,6 +723,9 @@ func (v *View) addToGroupModel(obj HierarchyObject, parent *qt6.QStandardItem) {
 	case *AgentObject:
 		nameItem = qt6.NewQStandardItem2(o.GetObjName())
 		nameItem.SetEditable(false)
+		if icon := GetObjectIcon(o.GetObjType(), o.IsAlive()); icon != nil {
+			nameItem.SetIcon(icon)
+		}
 
 		// Set color based on alive status
 		if !o.IsAlive() {
@@ -770,6 +776,9 @@ func (v *View) addToObjectModel(obj HierarchyObject, parent *qt6.QStandardItem) 
 	case *AgentObject:
 		nameItem = qt6.NewQStandardItem2(o.GetObjName())
 		nameItem.SetEditable(false)
+		if icon := GetObjectIcon(o.GetObjType(), o.IsAlive()); icon != nil {
+			nameItem.SetIcon(icon)
+		}
 
 		// Set color based on alive status
 		if !o.IsAlive() {

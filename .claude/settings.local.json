@@ -50,7 +50,12 @@
       "Bash(dmesg:*)",
       "Bash(log show:*)",
       "Bash(wait:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(otool:*)",
+      "Bash(codesign:*)",
+      "Bash(/usr/libexec/PlistBuddy:*)",
+      "Bash(sw_vers:*)",
+      "Bash(vtool -show-build:*)"
     ]
   }
 }

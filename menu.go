@@ -1,19 +1,24 @@
 package main
 
 import (
+	"path/filepath"
+
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/dialogs"
 	"scouter.client.qt/perspective"
+	"scouter.client.qt/settings"
 	"scouter.client.qt/views"
 )
 
 // MenuManager manages the application menu bar
 type MenuManager struct {
-	menuBar      *qt6.QMenuBar
-	mainWindow   *qt6.QMainWindow
-	perspMgr     *perspective.Manager
-	groupNavDock *qt6.QDockWidget
-	alertView    *views.AlertView
+	menuBar        *qt6.QMenuBar
+	mainWindow     *qt6.QMainWindow
+	perspMgr       *perspective.Manager
+	groupNavDock   *qt6.QDockWidget
+	alertView      *views.AlertView
+	onBeforeExport func()
+	onAfterImport  func()
 }
 
 // NewMenuManager creates a new menu manager and sets up menus
@@ -26,6 +31,7 @@ func NewMenuManager(mainWindow *qt6.QMainWindow, perspMgr *perspective.Manager, 
 	}
 
 	mainWindow.SetMenuBar(mm.menuBar)
+	mm.setupFileMenu()
 	mm.setupServerMenu()
 	mm.setupChartMenu()
 	mm.setupManagementMenu()
@@ -54,6 +60,65 @@ func (mm *MenuManager) getActiveChartManager() *ChartManager {
 		}
 	}
 	return nil
+}
+
+// SetOnBeforeExport sets a callback invoked before exporting settings
+func (mm *MenuManager) SetOnBeforeExport(fn func()) {
+	mm.onBeforeExport = fn
+}
+
+// SetOnAfterImport sets a callback invoked after successful import
+func (mm *MenuManager) SetOnAfterImport(fn func()) {
+	mm.onAfterImport = fn
+}
+
+// setupFileMenu creates the File menu with Export/Import settings
+func (mm *MenuManager) setupFileMenu() {
+	fileMenu := mm.menuBar.AddMenuWithTitle("File")
+
+	exportAction := fileMenu.AddActionWithText("Export Settings...")
+	exportAction.OnTriggered(func() {
+		if mm.onBeforeExport != nil {
+			mm.onBeforeExport()
+		}
+
+		homeDir, _ := filepath.Abs(".")
+		defaultPath := filepath.Join(homeDir, "scouter-settings.zip")
+		zipPath := qt6.QFileDialog_GetSaveFileName4(
+			mm.mainWindow.QWidget,
+			"Export Settings",
+			defaultPath,
+			"Scouter Settings (*.zip)",
+		)
+		if zipPath == "" {
+			return
+		}
+		if err := settings.ExportSettings(zipPath); err != nil {
+			qt6.QMessageBox_Critical(mm.mainWindow.QWidget, "Export Failed", err.Error())
+			return
+		}
+		qt6.QMessageBox_Information(mm.mainWindow.QWidget, "Export Settings", "Settings exported successfully.")
+	})
+
+	importAction := fileMenu.AddActionWithText("Import Settings...")
+	importAction.OnTriggered(func() {
+		zipPath := qt6.QFileDialog_GetOpenFileName4(
+			mm.mainWindow.QWidget,
+			"Import Settings",
+			"",
+			"Scouter Settings (*.zip)",
+		)
+		if zipPath == "" {
+			return
+		}
+		if err := settings.ImportSettings(zipPath); err != nil {
+			qt6.QMessageBox_Critical(mm.mainWindow.QWidget, "Import Failed", err.Error())
+			return
+		}
+		if mm.onAfterImport != nil {
+			mm.onAfterImport()
+		}
+	})
 }
 
 // setupServerMenu creates the Server menu
