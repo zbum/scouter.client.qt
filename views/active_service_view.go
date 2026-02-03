@@ -2,9 +2,7 @@ package views
 
 import (
 	"fmt"
-	"log"
 	"sync"
-	"time"
 
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/cache"
@@ -363,10 +361,8 @@ func (v *ActiveServiceView) doFetch() {
 		v.servicesMu.Unlock()
 	}()
 
-	start := time.Now()
 	servers := server.GetManager().GetConnectedServers()
 	if len(servers) == 0 {
-		log.Printf("[ActiveService] no connected servers")
 		return
 	}
 
@@ -382,9 +378,7 @@ func (v *ActiveServiceView) doFetch() {
 			if session == nil {
 				continue
 			}
-			log.Printf("[ActiveService] fetching from server %d for objHash=%d", srv.ID, v.objHash)
 			services := v.fetchAgentActiveServices(session)
-			log.Printf("[ActiveService] got %d services from server %d (took %v)", len(services), srv.ID, time.Since(start))
 			allServices = append(allServices, services...)
 		}
 	} else {
@@ -398,11 +392,8 @@ func (v *ActiveServiceView) doFetch() {
 		}
 	}
 
-	log.Printf("[ActiveService] total %d services (took %v)", len(allServices), time.Since(start))
-
 	// Keep previous data if the new fetch returned nothing
 	if len(allServices) == 0 {
-		log.Printf("[ActiveService] keeping previous data (empty response)")
 		return
 	}
 
@@ -475,16 +466,11 @@ func (v *ActiveServiceView) fetchAgentActiveServices(session interface{}) []*Act
 	param.PutDecimal(protocol.ParamObjHash, v.objHash)
 	param.PutText(protocol.ParamObjType, v.objType)
 
-	log.Printf("[ActiveService] RequestStream CMD_OBJECT_ACTIVE_SERVICE_LIST objHash=%d objType=%s", v.objHash, v.objType)
 	err := s.RequestStream(protocol.CMD_OBJECT_ACTIVE_SERVICE_LIST, param, func(p pack.Pack) bool {
-		log.Printf("[ActiveService] callback: pack type=%T", p)
 		mp, ok := p.(*pack.MapPack)
 		if !ok {
-			log.Printf("[ActiveService] callback: not a MapPack, skipping")
 			return true
 		}
-
-		log.Printf("[ActiveService] callback: MapPack keys=%v", mp.Keys())
 
 		// Server returns MapPack with parallel ListValue arrays
 		idLv := mp.GetListValue("id")
@@ -542,10 +528,7 @@ func (v *ActiveServiceView) fetchAgentActiveServices(session interface{}) []*Act
 		}
 		return true
 	})
-	if err != nil {
-		log.Printf("[ActiveService] RequestStream error: %v", err)
-	}
-	log.Printf("[ActiveService] RequestStream done, got %d services", len(services))
+	_ = err
 
 	return services
 }
@@ -579,9 +562,6 @@ func (v *ActiveServiceView) refreshTable() {
 		}
 		visible = append(visible, visibleSvc{svc, serviceName})
 	}
-
-	log.Printf("[ActiveService] refreshTable: objHash=%d, %d services, %d visible, currentRows=%d",
-		v.objHash, len(v.services), len(visible), v.tableWidget.RowCount())
 
 	// Adjust row count without clearing existing items
 	currentRows := v.tableWidget.RowCount()

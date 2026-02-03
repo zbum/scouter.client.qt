@@ -2,7 +2,6 @@ package views
 
 import (
 	"fmt"
-	"log"
 	"sort"
 	"sync"
 
@@ -10,7 +9,6 @@ import (
 	"scouter.client.qt/cache"
 	"scouter.client.qt/groupnav"
 	"scouter.client.qt/protocol"
-	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
 	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
@@ -217,9 +215,9 @@ func (w *eqWidget) paint() {
 				barIdx++
 			}
 		}
-		drawBars(d.Speed.Act1, colorAct1)
-		drawBars(d.Speed.Act2, colorAct2)
 		drawBars(d.Speed.Act3, colorAct3)
+		drawBars(d.Speed.Act2, colorAct2)
+		drawBars(d.Speed.Act1, colorAct1)
 
 		// Draw total count next to the bars
 		totalX := barX + barIdx*(barW+barGap) + 4
@@ -377,7 +375,9 @@ func (v *GroupEQView) startFetch() {
 	go v.doFetch()
 }
 
-// doFetch fetches active speed data in the background
+// doFetch fetches active service lists per agent and counts by elapsed time.
+// Uses CMD_OBJECT_ACTIVE_SERVICE_LIST for real-time data (every 2s) instead of
+// CMD_ACTIVESPEED_GROUP_REAL_TIME which relies on the counter cache (~15s updates).
 func (v *GroupEQView) doFetch() {
 	defer func() {
 		v.fetchMu.Lock()
@@ -387,13 +387,7 @@ func (v *GroupEQView) doFetch() {
 
 	members := groupnav.GetManager().GetObjectsByGroup(v.groupName)
 	if len(members) == 0 {
-		log.Printf("[EQ:%s] no members in group", v.groupName)
 		return
-	}
-
-	objHashList := &io.ListValue{}
-	for hash := range members {
-		objHashList.Add(io.NewDecimalValue(int32(hash)))
 	}
 
 	servers := server.GetManager().GetConnectedServers()
@@ -403,50 +397,54 @@ func (v *GroupEQView) doFetch() {
 
 	results := make(map[int32]ActiveSpeedData)
 
-	for _, srv := range servers {
-		session := srv.Session()
-		if session == nil {
-			continue
-		}
+	for hash := range members {
+		objHash := int32(hash)
 
-		param := pack.NewMapPack()
-		param.Put(protocol.ParamObjHash, objHashList)
+		for _, srv := range servers {
+			session := srv.Session()
+			if session == nil {
+				continue
+			}
 
-		session.RequestStream(protocol.CMD_ACTIVESPEED_GROUP_REAL_TIME, param, func(p pack.Pack) bool {
-			mp, ok := p.(*pack.MapPack)
-			if !ok {
+			param := pack.NewMapPack()
+			param.PutDecimal(protocol.ParamObjHash, objHash)
+			param.PutText(protocol.ParamObjType, v.objType)
+
+			var act1, act2, act3 int32
+			session.RequestStream(protocol.CMD_OBJECT_ACTIVE_SERVICE_LIST, param, func(p pack.Pack) bool {
+				mp, ok := p.(*pack.MapPack)
+				if !ok {
+					return true
+				}
+				elapsedLv := mp.GetListValue("elapsed")
+				if elapsedLv == nil {
+					return true
+				}
+				for i := 0; i < elapsedLv.Size(); i++ {
+					elapsed := int32(elapsedLv.GetInt64(i))
+					if elapsed < 3000 {
+						act1++
+					} else if elapsed < 8000 {
+						act2++
+					} else {
+						act3++
+					}
+				}
 				return true
-			}
+			})
 
-			objHash := mp.GetDecimal("objHash")
-			act1 := mp.GetDecimal("act1")
-			act2 := mp.GetDecimal("act2")
-			act3 := mp.GetDecimal("act3")
-
-			results[objHash] = ActiveSpeedData{
-				Act1: act1,
-				Act2: act2,
-				Act3: act3,
-			}
-			return true
-		})
-	}
-
-	log.Printf("[EQ:%s] fetched %d results for %d members", v.groupName, len(results), len(members))
-
-	// Merge new results into lastData
-	// Only overwrite with zeros if agent didn't respond at all;
-	// keep previous non-zero values when server returns zeros (counter cache gap)
-	for hash, speed := range results {
-		total := speed.Act1 + speed.Act2 + speed.Act3
-		if total > 0 {
-			v.lastData[hash] = speed
-		} else if _, exists := v.lastData[hash]; !exists {
-			v.lastData[hash] = speed
+			results[objHash] = ActiveSpeedData{Act1: act1, Act2: act2, Act3: act3}
+			break // one server is enough per agent
 		}
-		// If total==0 and we already have data, keep previous non-zero values
 	}
 
+	// Update lastData directly (real-time data, no retention needed)
+	for hash := range members {
+		objHash := int32(hash)
+		if speed, ok := results[objHash]; ok {
+			v.lastData[objHash] = speed
+		}
+	}
 	// Remove agents no longer in the group
 	for hash := range v.lastData {
 		if _, ok := members[int(hash)]; !ok {
@@ -458,7 +456,7 @@ func (v *GroupEQView) doFetch() {
 		return
 	}
 
-	// Build sorted display data from merged data
+	// Build sorted display data
 	eqData := make([]EqData, 0, len(v.lastData))
 	objCache := cache.GetObjectCache()
 	for hash, speed := range v.lastData {
@@ -480,12 +478,6 @@ func (v *GroupEQView) doFetch() {
 	sort.Slice(eqData, func(i, j int) bool {
 		return eqData[i].DisplayName < eqData[j].DisplayName
 	})
-
-	log.Printf("[EQ:%s] setting %d agents data", v.groupName, len(eqData))
-	for _, d := range eqData {
-		log.Printf("[EQ:%s]   %s: act1=%d act2=%d act3=%d alive=%v",
-			v.groupName, d.DisplayName, d.Speed.Act1, d.Speed.Act2, d.Speed.Act3, d.Alive)
-	}
 
 	v.fetchMu.Lock()
 	v.pendingData = eqData
