@@ -1,11 +1,14 @@
 package groupnav
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/mappu/miqt/qt6"
 	"scouter.client.qt/dialogs"
+	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
 	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
@@ -52,7 +55,7 @@ type View struct {
 	onGroupSelected  func(group *GroupObject)
 	onAgentSelected  func(agent *AgentObject)
 	onRefreshRequest func()
-	onAddGroupChart  func(groupName, objType, counterName, displayName string)
+	onAddGroupChart  func(groupName, objType, counterName, displayName string, viewMode string)
 	onAddGroupXLog   func(groupName, objType string)
 	onAddGroupEQ     func(groupName, objType string)
 }
@@ -85,6 +88,9 @@ func NewView(mainWindow *qt6.QMainWindow) *View {
 	// Create tab widget
 	v.tabWidget = qt6.NewQTabWidget2()
 	v.tabWidget.SetTabPosition(qt6.QTabWidget__North)
+	tabFont := v.tabWidget.Font()
+	tabFont.SetPointSize(10)
+	v.tabWidget.SetFont(tabFont)
 
 	// Create Group tab
 	groupTab := qt6.NewQWidget2()
@@ -306,7 +312,7 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 						})
 						menu.AddAction(removeAction)
 
-						// Counter chart items
+						// Counter chart items with Live/Load submenus
 						if v.onAddGroupChart != nil {
 							menu.AddSeparator()
 							type counterItem struct {
@@ -325,11 +331,39 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 							}
 							for _, ci := range counters {
 								ci := ci // capture
-								action := qt6.NewQAction2(ci.display)
-								action.OnTriggered(func() {
-									v.onAddGroupChart(groupName, objType, ci.counter, ci.display)
-								})
-								menu.AddAction(action)
+								counterMenu := menu.AddMenuWithTitle(ci.display)
+
+								// Live submenu
+								liveMenu := counterMenu.AddMenuWithTitle("Live")
+								for _, vm := range []struct{ label, mode string }{
+									{"Time All", "live-time-all"},
+									{"Time Total", "live-time-total"},
+									{"Daily All", "live-daily-all"},
+									{"Daily Total", "live-daily-total"},
+								} {
+									vm := vm
+									action := qt6.NewQAction2(vm.label)
+									action.OnTriggered(func() {
+										v.onAddGroupChart(groupName, objType, ci.counter, ci.display, vm.mode)
+									})
+									liveMenu.AddAction(action)
+								}
+
+								// Load submenu
+								loadMenu := counterMenu.AddMenuWithTitle("Load")
+								for _, vm := range []struct{ label, mode string }{
+									{"Time All", "load-time-all"},
+									{"Time Total", "load-time-total"},
+									{"Daily All", "load-daily-all"},
+									{"Daily Total", "load-daily-total"},
+								} {
+									vm := vm
+									action := qt6.NewQAction2(vm.label)
+									action.OnTriggered(func() {
+										v.onAddGroupChart(groupName, objType, ci.counter, ci.display, vm.mode)
+									})
+									loadMenu.AddAction(action)
+								}
 							}
 						}
 
@@ -592,7 +626,6 @@ func (v *View) restoreSelection(treeView *qt6.QTreeView, model *qt6.QStandardIte
 	}
 	if parent.IsValid() {
 		treeView.SelectionModel().SetCurrentIndex(parent, qt6.QItemSelectionModel__ClearAndSelect|qt6.QItemSelectionModel__Rows)
-		treeView.ScrollTo(parent, qt6.QAbstractItemView__EnsureVisible)
 	}
 }
 
@@ -606,8 +639,8 @@ func (v *View) updateGroupTree() {
 
 	// Clear existing items and reset headers
 	v.groupModel.Clear()
-	v.groupModel.SetColumnCount(2)
-	headerLabels := []string{"Group/Object", "Perf"}
+	v.groupModel.SetColumnCount(1)
+	headerLabels := []string{"Group/Object"}
 	v.groupModel.SetHorizontalHeaderLabels(headerLabels)
 
 	// Sort group names
@@ -702,7 +735,7 @@ func (v *View) expandOrCollapseItem(treeView *qt6.QTreeView, model *qt6.QStandar
 
 // addToGroupModel adds a hierarchy object to the group model
 func (v *View) addToGroupModel(obj HierarchyObject, parent *qt6.QStandardItem) {
-	var nameItem, perfItem *qt6.QStandardItem
+	var nameItem *qt6.QStandardItem
 
 	switch o := obj.(type) {
 	case *GroupObject:
@@ -711,14 +744,10 @@ func (v *View) addToGroupModel(obj HierarchyObject, parent *qt6.QStandardItem) {
 		if icon := GetObjectIcon(o.GetObjType(), true); icon != nil {
 			nameItem.SetIcon(icon)
 		}
-		perfItem = qt6.NewQStandardItem()
-		perfItem.SetEditable(false)
 
 	case *DummyObject:
 		nameItem = qt6.NewQStandardItem2(o.GetName())
 		nameItem.SetEditable(false)
-		perfItem = qt6.NewQStandardItem()
-		perfItem.SetEditable(false)
 
 	case *AgentObject:
 		nameItem = qt6.NewQStandardItem2(o.GetObjName())
@@ -733,10 +762,6 @@ func (v *View) addToGroupModel(obj HierarchyObject, parent *qt6.QStandardItem) {
 			brush := qt6.NewQBrush3(grayColor)
 			nameItem.SetForeground(brush)
 		}
-
-		perfItem = qt6.NewQStandardItem2(o.GetMasterCounter())
-		perfItem.SetEditable(false)
-		perfItem.SetTextAlignment(qt6.AlignRight | qt6.AlignVCenter)
 
 	default:
 		return
@@ -748,12 +773,10 @@ func (v *View) addToGroupModel(obj HierarchyObject, parent *qt6.QStandardItem) {
 	nameItem.SetData(qt6.NewQVariant6(itemID), int(qt6.UserRole))
 	v.groupObjMap[itemID] = obj
 
-	row := []*qt6.QStandardItem{nameItem, perfItem}
-
 	if parent == nil {
-		v.groupModel.AppendRow(row)
+		v.groupModel.AppendRowWithItem(nameItem)
 	} else {
-		parent.AppendRow(row)
+		parent.AppendRowWithItem(nameItem)
 	}
 
 	// Add children recursively
@@ -762,19 +785,27 @@ func (v *View) addToGroupModel(obj HierarchyObject, parent *qt6.QStandardItem) {
 	}
 }
 
-// addToObjectModel adds a hierarchy object to the object model
-func (v *View) addToObjectModel(obj HierarchyObject, parent *qt6.QStandardItem) {
+// addToObjectModel adds a hierarchy object to the object model and returns the sum of child counter values
+func (v *View) addToObjectModel(obj HierarchyObject, parent *qt6.QStandardItem) float64 {
 	var nameItem, perfItem *qt6.QStandardItem
+	var selfValue float64
 
 	switch o := obj.(type) {
 	case *DummyObject:
 		nameItem = qt6.NewQStandardItem2(o.GetName())
 		nameItem.SetEditable(false)
+		nameItem.SetColumnCount(2)
 		perfItem = qt6.NewQStandardItem()
 		perfItem.SetEditable(false)
+		perfItem.SetTextAlignment(qt6.AlignRight | qt6.AlignVCenter)
 
 	case *AgentObject:
-		nameItem = qt6.NewQStandardItem2(o.GetObjName())
+		// Display short name (last segment of ObjName, e.g., "agent1" from "/host/agent1")
+		shortName := o.GetObjName()
+		if idx := strings.LastIndex(shortName, "/"); idx >= 0 && idx+1 < len(shortName) {
+			shortName = shortName[idx+1:]
+		}
+		nameItem = qt6.NewQStandardItem2(shortName)
 		nameItem.SetEditable(false)
 		if icon := GetObjectIcon(o.GetObjType(), o.IsAlive()); icon != nil {
 			nameItem.SetIcon(icon)
@@ -787,12 +818,16 @@ func (v *View) addToObjectModel(obj HierarchyObject, parent *qt6.QStandardItem) 
 			nameItem.SetForeground(brush)
 		}
 
-		perfItem = qt6.NewQStandardItem2(o.GetMasterCounter())
+		perfItem = qt6.NewQStandardItem()
+		perfItem.SetText(o.GetMasterCounter())
 		perfItem.SetEditable(false)
 		perfItem.SetTextAlignment(qt6.AlignRight | qt6.AlignVCenter)
 
+		// Use raw value for parent aggregation
+		selfValue = o.GetMasterCounterRaw()
+
 	default:
-		return
+		return 0
 	}
 
 	// Store item ID in UserRole and map ID to object
@@ -813,6 +848,8 @@ func (v *View) addToObjectModel(obj HierarchyObject, parent *qt6.QStandardItem) 
 	for _, child := range obj.GetSortedChildArray() {
 		v.addToObjectModel(child, nameItem)
 	}
+
+	return selfValue
 }
 
 // organizeGroups loads groups from GroupManager and organizes the trees
@@ -824,13 +861,13 @@ func (v *View) organizeGroups() {
 	v.ignoringResizeEvents = true
 	defer func() { v.ignoringResizeEvents = false }()
 
+	// Save scroll positions before rebuild
+	groupScrollPos := v.groupTreeView.VerticalScrollBar().Value()
+	objectScrollPos := v.objectTreeView.VerticalScrollBar().Value()
+
 	// Suppress repaints during clear+rebuild to prevent flickering
 	v.groupTreeView.SetUpdatesEnabled(false)
 	v.objectTreeView.SetUpdatesEnabled(false)
-	defer func() {
-		v.groupTreeView.SetUpdatesEnabled(true)
-		v.objectTreeView.SetUpdatesEnabled(true)
-	}()
 
 	mgr := GetManager()
 	v.groupMap = make(map[string]HierarchyObject)
@@ -855,8 +892,19 @@ func (v *View) organizeGroups() {
 	v.updateGroupTree()
 	v.updateObjectTree()
 
+	// Re-enable updates so layout is recalculated before restoring scroll
+	v.groupTreeView.SetUpdatesEnabled(true)
+	v.objectTreeView.SetUpdatesEnabled(true)
+
 	// Restore column widths after refresh
 	v.adjustColumnWidths()
+
+	// Force Qt to process pending layout events before restoring scroll
+	qt6.QCoreApplication_ProcessEvents()
+
+	// Restore scroll positions after layout is up to date
+	v.groupTreeView.VerticalScrollBar().SetValue(groupScrollPos)
+	v.objectTreeView.VerticalScrollBar().SetValue(objectScrollPos)
 }
 
 // fetchServerObjects fetches object data from all connected servers
@@ -893,34 +941,174 @@ func (v *View) fetchServerObjects() {
 			v.cachedObjects[srv.ID] = objects
 		}
 
-		// Group objects by type
-		typeGroups := make(map[string]*DummyObject)
+		// Group objects by host name, with sub-objects (reqproc, datasource) under their parent agent
+		// ObjName patterns:
+		//   /hostname/agentname           → 2 segments: host group → agent
+		//   /hostname/agentname/procname  → 3 segments: host group → agent → proc (sub-object)
+		hostGroups := make(map[string]*DummyObject)
+		agentsByPath := make(map[string]*AgentObject) // key: "/hostname/agentname"
 
+		// First pass: create all regular agents (2-segment paths)
 		for _, obj := range objects {
-			// Get or create type group
-			typeGroup, ok := typeGroups[obj.ObjType]
-			if !ok {
-				typeGroup = NewDummyObject(obj.ObjType)
-				typeGroups[obj.ObjType] = typeGroup
-				serverFolder.PutChild(obj.ObjType, typeGroup)
+			parts := splitObjName(obj.ObjName)
+			if len(parts) != 2 {
+				continue // skip sub-objects in first pass
 			}
 
-			// Create agent object
-			agent := NewAgentObjectFromPack(
-				obj.ObjHash,
-				obj.ObjName,
-				obj.ObjType,
-				obj.Address,
-				obj.Version,
-				obj.Alive,
-				srv.ID,
-			)
-			typeGroup.PutChild(obj.ObjName, agent)
+			hostName := parts[0]
 
-			// Also add to groups in Group tab if assigned
+			// Get or create host group
+			hostGroup, ok := hostGroups[hostName]
+			if !ok {
+				hostGroup = NewDummyObject(hostName)
+				hostGroups[hostName] = hostGroup
+				serverFolder.PutChild(hostName, hostGroup)
+			}
+
+			agent := NewAgentObjectFromPack(
+				obj.ObjHash, obj.ObjName, obj.ObjType,
+				obj.Address, obj.Version, obj.Alive, srv.ID,
+			)
+
+			if obj.Tags != nil {
+				if counterVal := obj.Tags.Get("counter"); counterVal != nil {
+					raw := extractCounterFloat(counterVal)
+					agent.SetMasterCounterRaw(raw)
+					agent.SetMasterCounter(formatCounterDisplay(raw, obj.ObjType))
+				}
+			}
+
+			hostGroup.PutChild(obj.ObjName, agent)
+			agentsByPath["/"+hostName+"/"+parts[1]] = agent
+
 			v.addAgentToGroups(agent)
 		}
+
+		// Second pass: attach sub-objects (3+ segment paths) under their parent agent
+		for _, obj := range objects {
+			parts := splitObjName(obj.ObjName)
+			if len(parts) < 3 {
+				continue // already handled
+			}
+
+			hostName := parts[0]
+
+			subObj := NewAgentObjectFromPack(
+				obj.ObjHash, obj.ObjName, obj.ObjType,
+				obj.Address, obj.Version, obj.Alive, srv.ID,
+			)
+
+			if obj.Tags != nil {
+				if counterVal := obj.Tags.Get("counter"); counterVal != nil {
+					raw := extractCounterFloat(counterVal)
+					subObj.SetMasterCounterRaw(raw)
+					subObj.SetMasterCounter(formatCounterDisplay(raw, obj.ObjType))
+				}
+			}
+
+			// Find parent agent by /hostname/agentname
+			parentPath := "/" + hostName + "/" + parts[1]
+			if parentAgent, ok := agentsByPath[parentPath]; ok {
+				parentAgent.PutChild(obj.ObjName, subObj)
+			} else {
+				// Parent agent not found; place under host group directly
+				hostGroup, ok := hostGroups[hostName]
+				if !ok {
+					hostGroup = NewDummyObject(hostName)
+					hostGroups[hostName] = hostGroup
+					serverFolder.PutChild(hostName, hostGroup)
+				}
+				hostGroup.PutChild(obj.ObjName, subObj)
+			}
+
+			v.addAgentToGroups(subObj)
+		}
 	}
+}
+
+// splitObjName splits an ObjName like "/host/agent/proc" into ["host", "agent", "proc"]
+func splitObjName(objName string) []string {
+	s := strings.TrimPrefix(objName, "/")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "/")
+}
+
+// masterCounterUnitMap maps objType to the unit of its master counter
+// Based on scouter counters.xml family definitions
+var masterCounterUnitMap = map[string]string{
+	// host family → master=Cpu, unit=%
+	"linux": "%", "windows": "%", "osx": "%", "host": "%",
+	// javaee family → master=ActiveService, unit=cnt
+	"tomcat": "cnt", "java": "cnt", "jboss": "cnt", "jetty": "cnt", "resin": "cnt",
+	// golang family → master=GoActiveService, unit=cnt
+	"go": "cnt", "golang": "cnt",
+	// datasource family → master=ConnActive, unit=cnt
+	"datasource": "cnt",
+	// reqproc family → master=BytesSent, unit=bytes
+	"reqproc": "bytes",
+	// batch family → master=RunCount, unit=cnt
+	"batch": "cnt",
+	// aws family → master=Cpu, unit=%
+	"aws": "%",
+}
+
+// humanReadableByteCount formats bytes into human-readable format (e.g., "440.8M")
+func humanReadableByteCount(bytes float64) string {
+	unit := 1024.0
+	if bytes < unit {
+		return fmt.Sprintf("%.0f B", bytes)
+	}
+	units := []string{"K", "M", "G", "T", "P"}
+	exp := 0
+	val := bytes
+	for val >= unit && exp < len(units)-1 {
+		val /= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%s", val, units[exp])
+}
+
+// extractCounterFloat extracts a float64 value from an io.Value
+func extractCounterFloat(val io.Value) float64 {
+	switch v := val.(type) {
+	case *io.FloatValue:
+		return float64(v.Value)
+	case *io.DoubleValue:
+		return v.Value
+	case *io.DecimalValue:
+		return float64(v.Value)
+	case *io.DecimalLongValue:
+		return float64(v.Value)
+	default:
+		return 0
+	}
+}
+
+// formatCounterDisplay formats a numeric counter value with appropriate unit
+// Matches Java's getColumnTextForByte: FormatUtil.print(value, "#,###.##") + " " + unit
+func formatCounterDisplay(value float64, objType string) string {
+	unit := masterCounterUnitMap[objType]
+
+	// bytes unit → human-readable byte count (e.g., "440.8 M")
+	if unit == "bytes" {
+		return humanReadableByteCount(value)
+	}
+
+	// Format the number
+	var numStr string
+	if value == float64(int64(value)) {
+		numStr = fmt.Sprintf("%d", int64(value))
+	} else {
+		numStr = fmt.Sprintf("%.1f", value)
+	}
+
+	// Append unit suffix (matching Java's format: value + " " + unit)
+	if unit != "" {
+		return numStr + " " + unit
+	}
+	return numStr
 }
 
 // addAgentToGroups adds an agent to its assigned groups
@@ -1100,7 +1288,7 @@ func (v *View) SetOnRefreshRequest(callback func()) {
 }
 
 // SetOnAddGroupChart sets callback for adding a group chart
-func (v *View) SetOnAddGroupChart(callback func(groupName, objType, counterName, displayName string)) {
+func (v *View) SetOnAddGroupChart(callback func(groupName, objType, counterName, displayName string, viewMode string)) {
 	v.onAddGroupChart = callback
 }
 
@@ -1168,13 +1356,6 @@ func (v *View) adjustColumnWidths() {
 	defer func() { v.ignoringResizeEvents = false }()
 
 	// Apply ratios based on current view width
-	groupWidth := v.groupTreeView.Width()
-	if groupWidth > 0 && v.groupCol0Ratio > 0 {
-		col0Width := groupWidth * v.groupCol0Ratio / 100
-		v.groupTreeView.Header().ResizeSection(0, col0Width)
-		v.lastGroupWidth = groupWidth
-	}
-
 	objectWidth := v.objectTreeView.Width()
 	if objectWidth > 0 && v.objectCol0Ratio > 0 {
 		col0Width := objectWidth * v.objectCol0Ratio / 100
@@ -1185,11 +1366,10 @@ func (v *View) adjustColumnWidths() {
 
 // checkAndAdjustColumnWidths checks if view was resized and adjusts columns
 func (v *View) checkAndAdjustColumnWidths() {
-	groupWidth := v.groupTreeView.Width()
 	objectWidth := v.objectTreeView.Width()
 
 	// If width changed, adjust columns
-	if groupWidth != v.lastGroupWidth || objectWidth != v.lastObjectWidth {
+	if objectWidth != v.lastObjectWidth {
 		v.adjustColumnWidths()
 	}
 }

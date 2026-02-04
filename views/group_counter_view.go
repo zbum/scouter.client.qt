@@ -25,6 +25,7 @@ type GroupCounterView struct {
 	counterName    string
 	counterDisplay string
 	objType        string
+	viewMode       string // "live-time-all" (default) or "live-time-total"
 	maxObserved    int64
 	autoScale      bool
 	timer          *qt6.QTimer
@@ -34,26 +35,39 @@ type GroupCounterView struct {
 
 // NewGroupCounterView creates a new group counter chart dock widget
 func NewGroupCounterView(mainWindow *qt6.QMainWindow, groupName, objType, counterName, displayName string) *GroupCounterView {
-	return NewGroupCounterViewWithID(mainWindow, 0, groupName, objType, counterName, displayName)
+	return NewGroupCounterViewWithMode(mainWindow, 0, groupName, objType, counterName, displayName, "live-time-all")
 }
 
 // NewGroupCounterViewWithID creates a new group counter chart dock widget with a specific ID
 func NewGroupCounterViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objType, counterName, displayName string) *GroupCounterView {
+	return NewGroupCounterViewWithMode(mainWindow, id, groupName, objType, counterName, displayName, "live-time-all")
+}
+
+// NewGroupCounterViewWithMode creates a new group counter chart dock widget with a specific view mode
+func NewGroupCounterViewWithMode(mainWindow *qt6.QMainWindow, id int, groupName, objType, counterName, displayName string, viewMode string) *GroupCounterView {
+	if viewMode == "" {
+		viewMode = "live-time-all"
+	}
 	view := &GroupCounterView{
 		id:             id,
 		groupName:      groupName,
 		counterName:    counterName,
 		counterDisplay: displayName,
 		objType:        objType,
+		viewMode:       viewMode,
 		autoScale:      true,
 		active:         true,
 	}
 
-	title := fmt.Sprintf("%s - %s", groupName, displayName)
+	modeLabel := ""
+	if viewMode == "live-time-total" {
+		modeLabel = " (Total)"
+	}
+	title := fmt.Sprintf("%s - %s%s", groupName, displayName, modeLabel)
 
 	// Create dock widget
 	view.dock = qt6.NewQDockWidget2(title)
-	objectName := fmt.Sprintf("groupCounterDock_%d_%s_%s", id, groupName, counterName)
+	objectName := fmt.Sprintf("groupCounterDock_%d_%s_%s_%s", id, groupName, counterName, viewMode)
 	qtutil.SetObjectName(view.dock.QWidget.QObject, objectName)
 	view.dock.SetAllowedAreas(qt6.AllDockWidgetAreas)
 
@@ -186,16 +200,22 @@ func (v *GroupCounterView) fetchAndUpdate() {
 
 	v.lastFetchTime = time.Now()
 
-	// Add each agent's value as a separate series point
-	var maxVal int64
-	for hash, val := range values {
-		name := cache.GetObjectCache().GetObjName(hash)
-		if name == "" {
-			name = fmt.Sprintf("obj-%d", hash)
+	if v.viewMode == "live-time-total" {
+		// Sum all agent values into a single "Total" series
+		var total float64
+		for _, val := range values {
+			total += val
 		}
-		v.chart.AddSeriesPoint(name, int64(val))
-		if int64(val) > maxVal {
-			maxVal = int64(val)
+		v.chart.AddSeriesPoint("Total", int64(total))
+		v.chart.SetSeriesFill("Total", qt6.NewQColor6("#30649FF0"))
+	} else {
+		// Add each agent's value as a separate series point
+		for hash, val := range values {
+			name := cache.GetObjectCache().GetObjName(hash)
+			if name == "" {
+				name = fmt.Sprintf("obj-%d", hash)
+			}
+			v.chart.AddSeriesPoint(name, int64(val))
 		}
 	}
 
@@ -310,6 +330,9 @@ func (v *GroupCounterView) CounterName() string { return v.counterName }
 
 // CounterDisplay returns the display name
 func (v *GroupCounterView) CounterDisplay() string { return v.counterDisplay }
+
+// ViewMode returns the view mode
+func (v *GroupCounterView) ViewMode() string { return v.viewMode }
 
 // ID returns the view ID
 func (v *GroupCounterView) ID() int { return v.id }

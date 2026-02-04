@@ -138,8 +138,57 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 
 	// Control bar
 	controlBar := qt6.NewQHBoxLayout2()
+	controlBar.SetContentsMargins(2, 1, 2, 1)
+	controlBar.SetSpacing(4)
+
+	// Shared compact button style
+	btnStyle := `
+		QPushButton {
+			font-size: 10pt;
+			padding: 2px 10px;
+			border: 1px solid palette(mid);
+			border-radius: 3px;
+			background: palette(button);
+		}
+		QPushButton:hover {
+			background: palette(light);
+		}
+		QPushButton:pressed, QPushButton:checked {
+			background: palette(dark);
+			color: palette(bright-text);
+		}
+	`
+	comboStyle := `
+		QComboBox {
+			font-size: 10pt;
+			padding: 2px 8px 2px 6px;
+			border: 1px solid palette(mid);
+			border-radius: 3px;
+			background: palette(button);
+			min-width: 40px;
+		}
+		QComboBox:hover {
+			border-color: palette(highlight);
+		}
+		QComboBox::drop-down {
+			subcontrol-origin: padding;
+			subcontrol-position: center right;
+			width: 18px;
+			border: none;
+		}
+		QComboBox QAbstractItemView {
+			font-size: 10pt;
+			border: 1px solid palette(mid);
+			border-radius: 3px;
+			padding: 2px;
+			selection-background-color: palette(highlight);
+			selection-color: palette(highlighted-text);
+		}
+	`
+	labelStyle := "font-size: 10pt; color: palette(text);"
 
 	pauseBtn := qt6.NewQPushButton3("Pause")
+	pauseBtn.SetStyleSheet(btnStyle)
 	pauseBtn.SetCheckable(true)
 	pauseBtn.OnToggled(func(checked bool) {
 		v.paused = checked
@@ -152,6 +201,7 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 	controlBar.AddWidget(pauseBtn.QWidget)
 
 	clearBtn := qt6.NewQPushButton3("Clear")
+	clearBtn.SetStyleSheet(btnStyle)
 	clearBtn.OnClicked(func() {
 		v.chart.Clear()
 	})
@@ -161,9 +211,11 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 
 	// Max elapsed combo
 	maxLabel := qt6.NewQLabel3("Max:")
+	maxLabel.SetStyleSheet(labelStyle)
 	controlBar.AddWidget(maxLabel.QWidget)
 
 	maxCombo := qt6.NewQComboBox2()
+	maxCombo.SetStyleSheet(comboStyle)
 	maxCombo.AddItems([]string{"1s", "3s", "5s", "10s", "30s"})
 	maxCombo.SetCurrentIndex(2) // 5s default
 	maxCombo.OnCurrentIndexChanged(func(index int) {
@@ -176,9 +228,11 @@ func (v *View) initUI(mainWindow *qt6.QMainWindow, title, objectName string) {
 
 	// Time range combo
 	rangeLabel := qt6.NewQLabel3("Range:")
+	rangeLabel.SetStyleSheet(labelStyle)
 	controlBar.AddWidget(rangeLabel.QWidget)
 
 	rangeCombo := qt6.NewQComboBox2()
+	rangeCombo.SetStyleSheet(comboStyle)
 	rangeCombo.AddItems([]string{"30s", "1m", "3m", "5m", "10m"})
 	rangeCombo.SetCurrentIndex(3) // 5m default
 	rangeCombo.OnCurrentIndexChanged(func(index int) {
@@ -354,7 +408,6 @@ func (v *View) AddXLog(xlog *pack.XLogPack, serverID int) {
 	}
 	v.chart.AddPoint(point)
 }
-
 
 // loadPastXLog fetches historical XLog data for the given time range
 func (v *View) loadPastXLog(stime, etime time.Time) {
@@ -644,4 +697,3 @@ func formatHex(v uint64) string {
 	}
 	return string(result)
 }
-

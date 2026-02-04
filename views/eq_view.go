@@ -9,7 +9,6 @@ import (
 	"scouter.client.qt/cache"
 	"scouter.client.qt/groupnav"
 	"scouter.client.qt/protocol"
-	"scouter.client.qt/protocol/io"
 	"scouter.client.qt/protocol/pack"
 	"scouter.client.qt/qtutil"
 	"scouter.client.qt/server"
@@ -17,7 +16,6 @@ import (
 
 // Bar rendering constants
 const (
-	eqBarW    = 6  // max width of each vertical bar
 	eqAxisPad = 16 // top padding for axis labels
 	eqCountW  = 30 // left count column width
 )
@@ -37,11 +35,17 @@ type EqData struct {
 	Alive       bool
 }
 
+// Animation offsets for the rightmost bar: cycles through 0→1→2→3→2→1→...
+var eqPulseOffsets = []int{0, 1, 2, 3, 2, 1}
+
 // eqWidget is the custom-painted EQ widget
 type eqWidget struct {
 	*qt6.QWidget
-	mu   sync.RWMutex
-	data []EqData
+	mu         sync.RWMutex
+	data       []EqData
+	unitH      int // cached row height from last paint
+	pulseFrame int // current index into eqPulseOffsets
+	pulseTimer *qt6.QTimer
 }
 
 func newEqWidget(parent *qt6.QWidget) *eqWidget {
@@ -57,6 +61,14 @@ func newEqWidget(parent *qt6.QWidget) *eqWidget {
 	w.QWidget.OnPaintEvent(func(super func(event *qt6.QPaintEvent), event *qt6.QPaintEvent) {
 		w.paint()
 	})
+
+	// Pulse animation timer: advance frame every 300ms
+	w.pulseTimer = qt6.NewQTimer()
+	w.pulseTimer.OnTimeout(func() {
+		w.pulseFrame = (w.pulseFrame + 1) % len(eqPulseOffsets)
+		w.QWidget.Update()
+	})
+	w.pulseTimer.Start(300)
 
 	return w
 }
@@ -84,9 +96,9 @@ func (w *eqWidget) paint() {
 	grayColor := qt6.NewQColor3(128, 128, 128)
 	dimColor := qt6.NewQColor3(100, 100, 100)
 	darkColor := qt6.NewQColor3(80, 80, 80)
-	colorAct1 := qt6.NewQColor3(59, 130, 246)  // blue (normal)
-	colorAct2 := qt6.NewQColor3(234, 179, 8)   // yellow (slow)
-	colorAct3 := qt6.NewQColor3(239, 68, 68)   // red (very slow)
+	colorAct1 := qt6.NewQColor3(59, 130, 246) // blue (normal)
+	colorAct2 := qt6.NewQColor3(234, 179, 8)  // yellow (slow)
+	colorAct3 := qt6.NewQColor3(239, 68, 68)  // red (very slow)
 	bgNameColor := qt6.NewQColor3(200, 200, 200)
 	rowBorderColor := qt6.NewQColor3(220, 220, 220)
 
@@ -105,6 +117,7 @@ func (w *eqWidget) paint() {
 	if unitH < 20 {
 		unitH = 20
 	}
+	w.unitH = unitH
 
 	// Find max total across all rows for scale
 	var maxTotal int32
@@ -152,18 +165,9 @@ func (w *eqWidget) paint() {
 		textH = 16
 	}
 
-	// Scale bar width based on row height
-	barW := unitH / 10
-	if barW < 3 {
-		barW = 3
-	}
-	if barW > eqBarW {
-		barW = eqBarW
-	}
-	barGap := barW / 3
-	if barGap < 1 {
-		barGap = 1
-	}
+	// Fixed bar width and gap for tight, consistent look
+	barW := 5
+	barGap := 1
 
 	for i, d := range data {
 		y := eqAxisPad + i*unitH
@@ -172,7 +176,7 @@ func (w *eqWidget) paint() {
 		painter.SetPenWithPen(rowBorderPen)
 		painter.DrawLine2(barStartX, y+unitH, widgetW, y+unitH)
 
-		// Draw agent name as background text (bottom-right of row)
+		// Draw agent name as background text (center of row)
 		painter.SetPen(bgNameColor)
 		if !d.Alive {
 			strikeFont := qt6.NewQFont()
@@ -183,7 +187,7 @@ func (w *eqWidget) paint() {
 			painter.SetFont(bgNameFont)
 		}
 		nameRect := qt6.NewQRect4(barStartX+4, y, barSpace-8, unitH)
-		painter.DrawText6(nameRect, int(qt6.AlignBottom|qt6.AlignRight), d.DisplayName)
+		painter.DrawText6(nameRect, int(qt6.AlignVCenter|qt6.AlignRight), d.DisplayName)
 
 		total := d.Speed.Act1 + d.Speed.Act2 + d.Speed.Act3
 
@@ -197,38 +201,66 @@ func (w *eqWidget) paint() {
 			continue
 		}
 
-		// Equalizer style: one vertical bar per active service, colored by type
-		barMaxH := unitH - textH - 6
+		// Equalizer style: vertical bars using full row height
+		barMaxH := unitH - 4
 		if barMaxH < 8 {
 			barMaxH = 8
 		}
 		barX := barStartX + 4
-		barBottom := y + unitH - textH - 2
+		barBottom := y + unitH - 2
 
-		// Draw each bar as a vertical column from bottom up
+		// Calculate how many bars fit in the full width (= maxTotal worth)
+		availW := barSpace - 8
+		maxBars := availW / (barW + barGap)
+		if maxBars < 1 {
+			maxBars = 1
+		}
+
+		// Draw proportional number of bars for each speed level
 		var barIdx int
-		drawBars := func(count int32, color *qt6.QColor) {
-			for j := int32(0); j < count; j++ {
+		totalBars := 0 // track total number of bars to draw
+		type barSegment struct {
+			count int
+			color *qt6.QColor
+		}
+		var segments []barSegment
+		calcBars := func(count int32, color *qt6.QColor) {
+			if count <= 0 {
+				return
+			}
+			nBars := int(float64(count) / float64(maxTotal) * float64(maxBars))
+			if nBars < 1 && count > 0 {
+				nBars = 1
+			}
+			segments = append(segments, barSegment{count: nBars, color: color})
+			totalBars += nBars
+		}
+		calcBars(d.Speed.Act3, colorAct3)
+		calcBars(d.Speed.Act2, colorAct2)
+		calcBars(d.Speed.Act1, colorAct1)
+
+		pulseOffset := eqPulseOffsets[w.pulseFrame]
+		for _, seg := range segments {
+			for j := 0; j < seg.count; j++ {
 				x := barX + barIdx*(barW+barGap)
-				painter.FillRect5(x, barBottom-barMaxH, barW, barMaxH, color)
+				// Apply pulse offset to the last bar
+				if barIdx == totalBars-1 {
+					x += pulseOffset
+				}
+				painter.FillRect5(x, barBottom-barMaxH, barW, barMaxH, seg.color)
 				barIdx++
 			}
 		}
-		drawBars(d.Speed.Act1, colorAct1)
-		drawBars(d.Speed.Act2, colorAct2)
-		drawBars(d.Speed.Act3, colorAct3)
 
 		// Draw total count next to the bars
-		totalX := barX + barIdx*(barW+barGap) + 4
+		totalX := barX + barIdx*(barW+barGap) + pulseOffset + 4
 		painter.SetPen(dimColor)
 		painter.SetFont(smallFont)
 		painter.DrawText3(totalX, barBottom-barMaxH+12, fmt.Sprintf("%d", total))
 
-		// Draw breakdown text below bars: (act1 / act2 / act3)
-		painter.SetPen(dimColor)
-		painter.SetFont(smallFont)
+		// Draw breakdown text below total count
 		breakdownText := fmt.Sprintf("(%d / %d / %d)", d.Speed.Act1, d.Speed.Act2, d.Speed.Act3)
-		painter.DrawText3(barX, barBottom+textH-2, breakdownText)
+		painter.DrawText3(totalX, barBottom-barMaxH+24, breakdownText)
 	}
 
 	// Draw vertical axis line
@@ -239,14 +271,22 @@ func (w *eqWidget) paint() {
 
 // GroupEQView is the dock widget wrapper for the EQ view
 type GroupEQView struct {
-	dock      *qt6.QDockWidget
-	widget    *eqWidget
-	id        int
-	groupName string
-	objType   string
-	timer     *qt6.QTimer
-	active    bool
-	lastData  map[int32]ActiveSpeedData // retain previous data until new arrives
+	dock               *qt6.QDockWidget
+	widget             *eqWidget
+	id                 int
+	groupName          string
+	objType            string
+	timer              *qt6.QTimer
+	active             bool
+	lastData           map[int32]ActiveSpeedData // retain previous data until new arrives
+	zeroCount          map[int32]int             // consecutive zero-fetch count per agent
+	onAgentDoubleClick func(objHash int32, objType string)
+
+	// Background fetch state
+	fetchMu     sync.Mutex
+	fetching    bool
+	dirty       bool
+	pendingData []EqData
 }
 
 // NewGroupEQView creates a new group EQ dock view
@@ -262,6 +302,7 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 		objType:   objType,
 		active:    true,
 		lastData:  make(map[int32]ActiveSpeedData),
+		zeroCount: make(map[int32]int),
 	}
 
 	title := fmt.Sprintf("%s - Active Service EQ", groupName)
@@ -274,12 +315,46 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 	v.widget = newEqWidget(nil)
 	v.dock.SetWidget(v.widget.QWidget)
 
+	// Double-click handler: identify the agent bar that was clicked
+	v.widget.QWidget.OnMouseDoubleClickEvent(func(super func(event *qt6.QMouseEvent), event *qt6.QMouseEvent) {
+		super(event)
+		if v.onAgentDoubleClick == nil {
+			return
+		}
+		pos := event.Pos()
+		y := pos.Y()
+		unitH := v.widget.unitH
+		if unitH == 0 {
+			return
+		}
+		if y <= eqAxisPad {
+			return
+		}
+		v.widget.mu.RLock()
+		data := make([]EqData, len(v.widget.data))
+		copy(data, v.widget.data)
+		v.widget.mu.RUnlock()
+
+		index := (y - eqAxisPad) / unitH
+		if index < 0 || index >= len(data) {
+			return
+		}
+		d := data[index]
+		if !d.Alive {
+			return
+		}
+		v.onAgentDoubleClick(d.ObjHash, v.objType)
+	})
+
 	// 2-second polling timer
 	v.timer = qt6.NewQTimer()
 	v.timer.OnTimeout(func() {
-		v.fetchAndUpdate()
+		v.tick()
 	})
 	v.timer.Start(2000)
+
+	// Initial fetch
+	v.startFetch()
 
 	// Handle dock visibility
 	v.dock.OnVisibilityChanged(func(visible bool) {
@@ -302,16 +377,50 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 	return v
 }
 
-// fetchAndUpdate fetches active speed data and updates the widget
-func (v *GroupEQView) fetchAndUpdate() {
+// tick is called by the timer on the main thread.
+// It applies pending data if available, then kicks off the next background fetch.
+func (v *GroupEQView) tick() {
+	v.fetchMu.Lock()
+	if v.dirty {
+		v.dirty = false
+		data := v.pendingData
+		v.pendingData = nil
+		v.fetchMu.Unlock()
+		if len(data) > 0 {
+			v.widget.setData(data)
+		}
+	} else {
+		v.fetchMu.Unlock()
+	}
+	v.startFetch()
+}
+
+// startFetch launches a background goroutine to fetch data (if not already fetching)
+func (v *GroupEQView) startFetch() {
+	v.fetchMu.Lock()
+	if v.fetching {
+		v.fetchMu.Unlock()
+		return
+	}
+	v.fetching = true
+	v.fetchMu.Unlock()
+
+	go v.doFetch()
+}
+
+// doFetch fetches active service lists per agent and counts by elapsed time.
+// Uses CMD_OBJECT_ACTIVE_SERVICE_LIST for real-time data (every 2s) instead of
+// CMD_ACTIVESPEED_GROUP_REAL_TIME which relies on the counter cache (~15s updates).
+func (v *GroupEQView) doFetch() {
+	defer func() {
+		v.fetchMu.Lock()
+		v.fetching = false
+		v.fetchMu.Unlock()
+	}()
+
 	members := groupnav.GetManager().GetObjectsByGroup(v.groupName)
 	if len(members) == 0 {
 		return
-	}
-
-	objHashList := &io.ListValue{}
-	for hash := range members {
-		objHashList.Add(io.NewDecimalValue(int32(hash)))
 	}
 
 	servers := server.GetManager().GetConnectedServers()
@@ -321,40 +430,65 @@ func (v *GroupEQView) fetchAndUpdate() {
 
 	results := make(map[int32]ActiveSpeedData)
 
-	for _, srv := range servers {
-		session := srv.Session()
-		if session == nil {
-			continue
-		}
+	for hash := range members {
+		objHash := int32(hash)
 
-		param := pack.NewMapPack()
-		param.Put(protocol.ParamObjHash, objHashList)
+		for _, srv := range servers {
+			session := srv.Session()
+			if session == nil {
+				continue
+			}
 
-		session.RequestStream(protocol.CMD_ACTIVESPEED_GROUP_REAL_TIME, param, func(p pack.Pack) bool {
-			mp, ok := p.(*pack.MapPack)
-			if !ok {
+			param := pack.NewMapPack()
+			param.PutDecimal(protocol.ParamObjHash, objHash)
+			param.PutText(protocol.ParamObjType, v.objType)
+
+			var act1, act2, act3 int32
+			session.RequestStream(protocol.CMD_OBJECT_ACTIVE_SERVICE_LIST, param, func(p pack.Pack) bool {
+				mp, ok := p.(*pack.MapPack)
+				if !ok {
+					return true
+				}
+				elapsedLv := mp.GetListValue("elapsed")
+				if elapsedLv == nil {
+					return true
+				}
+				for i := 0; i < elapsedLv.Size(); i++ {
+					elapsed := int32(elapsedLv.GetInt64(i))
+					if elapsed < 3000 {
+						act1++
+					} else if elapsed < 8000 {
+						act2++
+					} else {
+						act3++
+					}
+				}
 				return true
-			}
+			})
 
-			objHash := mp.GetDecimal("objHash")
-			act1 := mp.GetDecimal("act1")
-			act2 := mp.GetDecimal("act2")
-			act3 := mp.GetDecimal("act3")
-
-			results[objHash] = ActiveSpeedData{
-				Act1: act1,
-				Act2: act2,
-				Act3: act3,
-			}
-			return true
-		})
+			results[objHash] = ActiveSpeedData{Act1: act1, Act2: act2, Act3: act3}
+			break // one server is enough per agent
+		}
 	}
 
-	// Merge new results into lastData (keep previous for agents that didn't respond)
-	for hash, speed := range results {
-		v.lastData[hash] = speed
+	// Update lastData: retain previous data through transient zero fetches
+	const zeroThreshold = 3 // clear after 3 consecutive zero results (~6 seconds)
+	for hash := range members {
+		objHash := int32(hash)
+		if speed, ok := results[objHash]; ok {
+			newTotal := speed.Act1 + speed.Act2 + speed.Act3
+			if newTotal > 0 {
+				v.lastData[objHash] = speed
+				v.zeroCount[objHash] = 0
+			} else {
+				v.zeroCount[objHash]++
+				if v.zeroCount[objHash] >= zeroThreshold {
+					v.lastData[objHash] = speed
+				}
+				// else: keep previous non-zero data
+			}
+		}
 	}
-
 	// Remove agents no longer in the group
 	for hash := range v.lastData {
 		if _, ok := members[int(hash)]; !ok {
@@ -366,7 +500,7 @@ func (v *GroupEQView) fetchAndUpdate() {
 		return
 	}
 
-	// Build sorted display data from merged data
+	// Build sorted display data
 	eqData := make([]EqData, 0, len(v.lastData))
 	objCache := cache.GetObjectCache()
 	for hash, speed := range v.lastData {
@@ -389,7 +523,10 @@ func (v *GroupEQView) fetchAndUpdate() {
 		return eqData[i].DisplayName < eqData[j].DisplayName
 	})
 
-	v.widget.setData(eqData)
+	v.fetchMu.Lock()
+	v.pendingData = eqData
+	v.dirty = true
+	v.fetchMu.Unlock()
 }
 
 // Dock returns the underlying dock widget
@@ -403,6 +540,11 @@ func (v *GroupEQView) GroupName() string { return v.groupName }
 
 // ObjType returns the object type
 func (v *GroupEQView) ObjType() string { return v.objType }
+
+// SetOnAgentDoubleClick sets the callback for double-clicking an agent bar
+func (v *GroupEQView) SetOnAgentDoubleClick(cb func(objHash int32, objType string)) {
+	v.onAgentDoubleClick = cb
+}
 
 // Close closes the view and cleans up
 func (v *GroupEQView) Close() {

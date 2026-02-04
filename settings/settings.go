@@ -18,6 +18,7 @@ type GroupChartConfig struct {
 	ObjType     string `json:"objType"`
 	CounterName string `json:"counterName"`
 	DisplayName string `json:"displayName"`
+	ViewMode    string `json:"viewMode,omitempty"`
 }
 
 // XLogViewConfig holds the configuration for a persisted XLog view
@@ -46,6 +47,8 @@ type PerspectiveState struct {
 	WindowState []byte             `json:"windowState,omitempty"`
 	Charts      []ChartConfig      `json:"charts,omitempty"`
 	GroupCharts []GroupChartConfig  `json:"groupCharts,omitempty"`
+	TodayViews  []GroupChartConfig  `json:"todayViews,omitempty"`
+	PastViews   []GroupChartConfig  `json:"pastViews,omitempty"`
 	XLogViews   []XLogViewConfig   `json:"xlogViews,omitempty"`
 	EQViews     []EQViewConfig     `json:"eqViews,omitempty"`
 }
