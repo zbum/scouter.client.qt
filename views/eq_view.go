@@ -16,7 +16,6 @@ import (
 
 // Bar rendering constants
 const (
-	eqBarW    = 6  // max width of each vertical bar
 	eqAxisPad = 16 // top padding for axis labels
 	eqCountW  = 30 // left count column width
 )
@@ -36,12 +35,17 @@ type EqData struct {
 	Alive       bool
 }
 
+// Animation offsets for the rightmost bar: cycles through 0→1→2→3→2→1→...
+var eqPulseOffsets = []int{0, 1, 2, 3, 2, 1}
+
 // eqWidget is the custom-painted EQ widget
 type eqWidget struct {
 	*qt6.QWidget
-	mu    sync.RWMutex
-	data  []EqData
-	unitH int // cached row height from last paint
+	mu         sync.RWMutex
+	data       []EqData
+	unitH      int // cached row height from last paint
+	pulseFrame int // current index into eqPulseOffsets
+	pulseTimer *qt6.QTimer
 }
 
 func newEqWidget(parent *qt6.QWidget) *eqWidget {
@@ -57,6 +61,14 @@ func newEqWidget(parent *qt6.QWidget) *eqWidget {
 	w.QWidget.OnPaintEvent(func(super func(event *qt6.QPaintEvent), event *qt6.QPaintEvent) {
 		w.paint()
 	})
+
+	// Pulse animation timer: advance frame every 300ms
+	w.pulseTimer = qt6.NewQTimer()
+	w.pulseTimer.OnTimeout(func() {
+		w.pulseFrame = (w.pulseFrame + 1) % len(eqPulseOffsets)
+		w.QWidget.Update()
+	})
+	w.pulseTimer.Start(300)
 
 	return w
 }
@@ -153,18 +165,9 @@ func (w *eqWidget) paint() {
 		textH = 16
 	}
 
-	// Scale bar width based on row height
-	barW := unitH / 10
-	if barW < 3 {
-		barW = 3
-	}
-	if barW > eqBarW {
-		barW = eqBarW
-	}
-	barGap := barW / 3
-	if barGap < 1 {
-		barGap = 1
-	}
+	// Fixed bar width and gap for tight, consistent look
+	barW := 5
+	barGap := 1
 
 	for i, d := range data {
 		y := eqAxisPad + i*unitH
@@ -173,7 +176,7 @@ func (w *eqWidget) paint() {
 		painter.SetPenWithPen(rowBorderPen)
 		painter.DrawLine2(barStartX, y+unitH, widgetW, y+unitH)
 
-		// Draw agent name as background text (bottom-right of row)
+		// Draw agent name as background text (center of row)
 		painter.SetPen(bgNameColor)
 		if !d.Alive {
 			strikeFont := qt6.NewQFont()
@@ -184,7 +187,7 @@ func (w *eqWidget) paint() {
 			painter.SetFont(bgNameFont)
 		}
 		nameRect := qt6.NewQRect4(barStartX+4, y, barSpace-8, unitH)
-		painter.DrawText6(nameRect, int(qt6.AlignBottom|qt6.AlignRight), d.DisplayName)
+		painter.DrawText6(nameRect, int(qt6.AlignVCenter|qt6.AlignRight), d.DisplayName)
 
 		total := d.Speed.Act1 + d.Speed.Act2 + d.Speed.Act3
 
@@ -198,38 +201,66 @@ func (w *eqWidget) paint() {
 			continue
 		}
 
-		// Equalizer style: one vertical bar per active service, colored by type
-		barMaxH := unitH - textH - 6
+		// Equalizer style: vertical bars using full row height
+		barMaxH := unitH - 4
 		if barMaxH < 8 {
 			barMaxH = 8
 		}
 		barX := barStartX + 4
-		barBottom := y + unitH - textH - 2
+		barBottom := y + unitH - 2
 
-		// Draw each bar as a vertical column from bottom up
+		// Calculate how many bars fit in the full width (= maxTotal worth)
+		availW := barSpace - 8
+		maxBars := availW / (barW + barGap)
+		if maxBars < 1 {
+			maxBars = 1
+		}
+
+		// Draw proportional number of bars for each speed level
 		var barIdx int
-		drawBars := func(count int32, color *qt6.QColor) {
-			for j := int32(0); j < count; j++ {
+		totalBars := 0 // track total number of bars to draw
+		type barSegment struct {
+			count int
+			color *qt6.QColor
+		}
+		var segments []barSegment
+		calcBars := func(count int32, color *qt6.QColor) {
+			if count <= 0 {
+				return
+			}
+			nBars := int(float64(count) / float64(maxTotal) * float64(maxBars))
+			if nBars < 1 && count > 0 {
+				nBars = 1
+			}
+			segments = append(segments, barSegment{count: nBars, color: color})
+			totalBars += nBars
+		}
+		calcBars(d.Speed.Act3, colorAct3)
+		calcBars(d.Speed.Act2, colorAct2)
+		calcBars(d.Speed.Act1, colorAct1)
+
+		pulseOffset := eqPulseOffsets[w.pulseFrame]
+		for _, seg := range segments {
+			for j := 0; j < seg.count; j++ {
 				x := barX + barIdx*(barW+barGap)
-				painter.FillRect5(x, barBottom-barMaxH, barW, barMaxH, color)
+				// Apply pulse offset to the last bar
+				if barIdx == totalBars-1 {
+					x += pulseOffset
+				}
+				painter.FillRect5(x, barBottom-barMaxH, barW, barMaxH, seg.color)
 				barIdx++
 			}
 		}
-		drawBars(d.Speed.Act3, colorAct3)
-		drawBars(d.Speed.Act2, colorAct2)
-		drawBars(d.Speed.Act1, colorAct1)
 
 		// Draw total count next to the bars
-		totalX := barX + barIdx*(barW+barGap) + 4
+		totalX := barX + barIdx*(barW+barGap) + pulseOffset + 4
 		painter.SetPen(dimColor)
 		painter.SetFont(smallFont)
 		painter.DrawText3(totalX, barBottom-barMaxH+12, fmt.Sprintf("%d", total))
 
-		// Draw breakdown text below bars: (act1 / act2 / act3)
-		painter.SetPen(dimColor)
-		painter.SetFont(smallFont)
+		// Draw breakdown text below total count
 		breakdownText := fmt.Sprintf("(%d / %d / %d)", d.Speed.Act1, d.Speed.Act2, d.Speed.Act3)
-		painter.DrawText3(barX, barBottom+textH-2, breakdownText)
+		painter.DrawText3(totalX, barBottom-barMaxH+24, breakdownText)
 	}
 
 	// Draw vertical axis line
@@ -248,6 +279,7 @@ type GroupEQView struct {
 	timer              *qt6.QTimer
 	active             bool
 	lastData           map[int32]ActiveSpeedData // retain previous data until new arrives
+	zeroCount          map[int32]int             // consecutive zero-fetch count per agent
 	onAgentDoubleClick func(objHash int32, objType string)
 
 	// Background fetch state
@@ -270,6 +302,7 @@ func NewGroupEQViewWithID(mainWindow *qt6.QMainWindow, id int, groupName, objTyp
 		objType:   objType,
 		active:    true,
 		lastData:  make(map[int32]ActiveSpeedData),
+		zeroCount: make(map[int32]int),
 	}
 
 	title := fmt.Sprintf("%s - Active Service EQ", groupName)
@@ -438,11 +471,22 @@ func (v *GroupEQView) doFetch() {
 		}
 	}
 
-	// Update lastData directly (real-time data, no retention needed)
+	// Update lastData: retain previous data through transient zero fetches
+	const zeroThreshold = 3 // clear after 3 consecutive zero results (~6 seconds)
 	for hash := range members {
 		objHash := int32(hash)
 		if speed, ok := results[objHash]; ok {
-			v.lastData[objHash] = speed
+			newTotal := speed.Act1 + speed.Act2 + speed.Act3
+			if newTotal > 0 {
+				v.lastData[objHash] = speed
+				v.zeroCount[objHash] = 0
+			} else {
+				v.zeroCount[objHash]++
+				if v.zeroCount[objHash] >= zeroThreshold {
+					v.lastData[objHash] = speed
+				}
+				// else: keep previous non-zero data
+			}
 		}
 	}
 	// Remove agents no longer in the group

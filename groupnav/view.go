@@ -55,7 +55,7 @@ type View struct {
 	onGroupSelected  func(group *GroupObject)
 	onAgentSelected  func(agent *AgentObject)
 	onRefreshRequest func()
-	onAddGroupChart  func(groupName, objType, counterName, displayName string)
+	onAddGroupChart  func(groupName, objType, counterName, displayName string, viewMode string)
 	onAddGroupXLog   func(groupName, objType string)
 	onAddGroupEQ     func(groupName, objType string)
 }
@@ -312,7 +312,7 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 						})
 						menu.AddAction(removeAction)
 
-						// Counter chart items
+						// Counter chart items with Live/Load submenus
 						if v.onAddGroupChart != nil {
 							menu.AddSeparator()
 							type counterItem struct {
@@ -331,11 +331,39 @@ func (v *View) showGroupContextMenu(pos *qt6.QPoint) {
 							}
 							for _, ci := range counters {
 								ci := ci // capture
-								action := qt6.NewQAction2(ci.display)
-								action.OnTriggered(func() {
-									v.onAddGroupChart(groupName, objType, ci.counter, ci.display)
-								})
-								menu.AddAction(action)
+								counterMenu := menu.AddMenuWithTitle(ci.display)
+
+								// Live submenu
+								liveMenu := counterMenu.AddMenuWithTitle("Live")
+								for _, vm := range []struct{ label, mode string }{
+									{"Time All", "live-time-all"},
+									{"Time Total", "live-time-total"},
+									{"Daily All", "live-daily-all"},
+									{"Daily Total", "live-daily-total"},
+								} {
+									vm := vm
+									action := qt6.NewQAction2(vm.label)
+									action.OnTriggered(func() {
+										v.onAddGroupChart(groupName, objType, ci.counter, ci.display, vm.mode)
+									})
+									liveMenu.AddAction(action)
+								}
+
+								// Load submenu
+								loadMenu := counterMenu.AddMenuWithTitle("Load")
+								for _, vm := range []struct{ label, mode string }{
+									{"Time All", "load-time-all"},
+									{"Time Total", "load-time-total"},
+									{"Daily All", "load-daily-all"},
+									{"Daily Total", "load-daily-total"},
+								} {
+									vm := vm
+									action := qt6.NewQAction2(vm.label)
+									action.OnTriggered(func() {
+										v.onAddGroupChart(groupName, objType, ci.counter, ci.display, vm.mode)
+									})
+									loadMenu.AddAction(action)
+								}
 							}
 						}
 
@@ -1260,7 +1288,7 @@ func (v *View) SetOnRefreshRequest(callback func()) {
 }
 
 // SetOnAddGroupChart sets callback for adding a group chart
-func (v *View) SetOnAddGroupChart(callback func(groupName, objType, counterName, displayName string)) {
+func (v *View) SetOnAddGroupChart(callback func(groupName, objType, counterName, displayName string, viewMode string)) {
 	v.onAddGroupChart = callback
 }
 

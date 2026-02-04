@@ -64,6 +64,7 @@ type DataPoint struct {
 type Series struct {
 	Name       string
 	Color      *qt6.QColor
+	FillColor  *qt6.QColor // if set, fill area below the line with this color
 	DataPoints []DataPoint
 }
 
@@ -230,6 +231,12 @@ func (c *Widget) SetShowMarkers(show bool) {
 	c.widget.Update()
 }
 
+// SetTimeRange sets the time range in seconds
+func (c *Widget) SetTimeRange(seconds int) {
+	c.config.TimeRange = seconds
+	c.widget.Update()
+}
+
 // SetShowLines enables or disables lines connecting data points
 func (c *Widget) SetShowLines(show bool) {
 	c.config.ShowLines = show
@@ -270,6 +277,12 @@ func (c *Widget) AddSeries(name string) *Series {
 	c.seriesOrder = append(c.seriesOrder, name)
 	c.colorIndex++
 	return s
+}
+
+// SetSeriesFill sets a fill color for the area below the series line
+func (c *Widget) SetSeriesFill(name string, fillColor *qt6.QColor) {
+	s := c.AddSeries(name)
+	s.FillColor = fillColor
 }
 
 // AddSeriesPoint adds a data point to a named series (auto-creates if missing)
@@ -460,6 +473,7 @@ func (c *Widget) paint() {
 
 	if len(c.seriesOrder) > 0 {
 		// Multi-series mode
+		baselineY := marginTop + chartHeight
 		for _, name := range c.seriesOrder {
 			s, ok := c.series[name]
 			if !ok || len(s.DataPoints) < 2 {
@@ -469,8 +483,9 @@ func (c *Widget) paint() {
 			pen := qt6.NewQPen3(s.Color)
 			pen.SetWidth(1)
 
-			var prevX, prevY int
-			var hasPrev bool
+			// Collect visible points for fill and line drawing
+			type xyPoint struct{ x, y int }
+			var points []xyPoint
 
 			for _, point := range s.DataPoints {
 				secondsAgo := now.Sub(point.Timestamp).Seconds()
@@ -484,25 +499,44 @@ func (c *Widget) paint() {
 				if yPos < marginTop {
 					yPos = marginTop
 				}
-				if yPos > marginTop+chartHeight {
-					yPos = marginTop + chartHeight
+				if yPos > baselineY {
+					yPos = baselineY
 				}
 
-				if c.config.ShowLines && hasPrev {
+				points = append(points, xyPoint{xPos, yPos})
+			}
+
+			// Fill area below the line if FillColor is set
+			if s.FillColor != nil && len(points) >= 2 {
+				fillPath := qt6.NewQPainterPath()
+				fillPath.MoveTo2(float64(points[0].x), float64(baselineY))
+				for _, p := range points {
+					fillPath.LineTo2(float64(p.x), float64(p.y))
+				}
+				fillPath.LineTo2(float64(points[len(points)-1].x), float64(baselineY))
+				fillPath.CloseSubpath()
+
+				brush := qt6.NewQBrush3(s.FillColor)
+				noPen := qt6.NewQPen()
+				noPen.SetStyle(qt6.NoPen)
+				painter.SetPenWithPen(noPen)
+				painter.SetBrush(brush)
+				painter.DrawPath(fillPath)
+			}
+
+			// Draw lines and markers
+			for i, p := range points {
+				if c.config.ShowLines && i > 0 {
 					painter.SetPenWithPen(pen)
-					painter.DrawLine2(prevX, prevY, xPos, yPos)
+					painter.DrawLine2(points[i-1].x, points[i-1].y, p.x, p.y)
 				}
 
 				if c.config.ShowMarkers {
 					painter.SetPenWithPen(pen)
 					markerSize := 2
-					painter.DrawLine2(xPos-markerSize, yPos-markerSize, xPos+markerSize, yPos+markerSize)
-					painter.DrawLine2(xPos-markerSize, yPos+markerSize, xPos+markerSize, yPos-markerSize)
+					painter.DrawLine2(p.x-markerSize, p.y-markerSize, p.x+markerSize, p.y+markerSize)
+					painter.DrawLine2(p.x-markerSize, p.y+markerSize, p.x+markerSize, p.y-markerSize)
 				}
-
-				prevX = xPos
-				prevY = yPos
-				hasPrev = true
 			}
 		}
 	} else if len(c.dataPoints) > 1 && (c.config.ShowMarkers || c.config.ShowLines) {

@@ -29,11 +29,15 @@ type ChartManager struct {
 	mainWindow         *qt6.QMainWindow
 	charts             []*ChartDock
 	groupCharts        []*views.GroupCounterView
+	todayViews         []*views.GroupCounterTodayView
+	pastViews          []*views.GroupCounterPastView
 	xlogViews          []*xlog.View
 	eqViews            []*views.GroupEQView
 	activeServiceViews []*views.ActiveServiceView
 	chartCount         int
 	groupChartCount    int
+	todayViewCount     int
+	pastViewCount      int
 	xlogCount          int
 	eqCount            int
 	timer              *qt6.QTimer
@@ -191,6 +195,36 @@ func (cm *ChartManager) AddGroupChart(groupName, objType, counterName, displayNa
 	return cm.addGroupChartWithID(cm.groupChartCount, groupName, objType, counterName, displayName)
 }
 
+// addGroupChartWithMode creates a group chart with a specific view mode
+func (cm *ChartManager) addGroupChartWithMode(groupName, objType, counterName, displayName string, viewMode string) *views.GroupCounterView {
+	cm.groupChartCount++
+	return cm.addGroupChartWithIDAndMode(cm.groupChartCount, groupName, objType, counterName, displayName, viewMode)
+}
+
+func (cm *ChartManager) addGroupChartWithIDAndMode(id int, groupName, objType, counterName, displayName string, viewMode string) *views.GroupCounterView {
+	gcv := views.NewGroupCounterViewWithMode(cm.mainWindow, id, groupName, objType, counterName, displayName, viewMode)
+	cm.groupCharts = append(cm.groupCharts, gcv)
+	if id > cm.groupChartCount {
+		cm.groupChartCount = id
+	}
+
+	dock := gcv.Dock()
+	cm.setDockObjectName(dock, fmt.Sprintf("%s_groupCounterDock_%d_%s_%s_%s", cm.dockPrefix, id, groupName, counterName, viewMode))
+	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
+		cm.notifyStateChanged()
+	})
+	dock.OnTopLevelChanged(func(topLevel bool) {
+		cm.notifyStateChanged()
+	})
+	dock.OnVisibilityChanged(func(visible bool) {
+		cm.notifyStateChanged()
+	})
+
+	cm.redistributeDockHeights()
+	cm.notifyStateChanged()
+	return gcv
+}
+
 func (cm *ChartManager) addGroupChartWithID(id int, groupName, objType, counterName, displayName string) *views.GroupCounterView {
 	gcv := views.NewGroupCounterViewWithID(cm.mainWindow, id, groupName, objType, counterName, displayName)
 	cm.groupCharts = append(cm.groupCharts, gcv)
@@ -214,6 +248,66 @@ func (cm *ChartManager) addGroupChartWithID(id int, groupName, objType, counterN
 	cm.redistributeDockHeights()
 	cm.notifyStateChanged()
 	return gcv
+}
+
+// AddTodayView creates and tracks a group counter today view
+func (cm *ChartManager) AddTodayView(groupName, objType, counterName, displayName string, viewMode string) *views.GroupCounterTodayView {
+	cm.todayViewCount++
+	return cm.addTodayViewWithID(cm.todayViewCount, groupName, objType, counterName, displayName, viewMode)
+}
+
+func (cm *ChartManager) addTodayViewWithID(id int, groupName, objType, counterName, displayName string, viewMode string) *views.GroupCounterTodayView {
+	tv := views.NewGroupCounterTodayView(cm.mainWindow, id, groupName, objType, counterName, displayName, viewMode)
+	cm.todayViews = append(cm.todayViews, tv)
+	if id > cm.todayViewCount {
+		cm.todayViewCount = id
+	}
+
+	dock := tv.Dock()
+	cm.setDockObjectName(dock, fmt.Sprintf("%s_todayDock_%d_%s_%s_%s", cm.dockPrefix, id, groupName, counterName, viewMode))
+	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
+		cm.notifyStateChanged()
+	})
+	dock.OnTopLevelChanged(func(topLevel bool) {
+		cm.notifyStateChanged()
+	})
+	dock.OnVisibilityChanged(func(visible bool) {
+		cm.notifyStateChanged()
+	})
+
+	cm.redistributeDockHeights()
+	cm.notifyStateChanged()
+	return tv
+}
+
+// AddPastView creates and tracks a group counter past view
+func (cm *ChartManager) AddPastView(groupName, objType, counterName, displayName string, viewMode string) *views.GroupCounterPastView {
+	cm.pastViewCount++
+	return cm.addPastViewWithID(cm.pastViewCount, groupName, objType, counterName, displayName, viewMode)
+}
+
+func (cm *ChartManager) addPastViewWithID(id int, groupName, objType, counterName, displayName string, viewMode string) *views.GroupCounterPastView {
+	pv := views.NewGroupCounterPastView(cm.mainWindow, id, groupName, objType, counterName, displayName, viewMode)
+	cm.pastViews = append(cm.pastViews, pv)
+	if id > cm.pastViewCount {
+		cm.pastViewCount = id
+	}
+
+	dock := pv.Dock()
+	cm.setDockObjectName(dock, fmt.Sprintf("%s_pastDock_%d_%s_%s_%s", cm.dockPrefix, id, groupName, counterName, viewMode))
+	dock.OnDockLocationChanged(func(area qt6.DockWidgetArea) {
+		cm.notifyStateChanged()
+	})
+	dock.OnTopLevelChanged(func(topLevel bool) {
+		cm.notifyStateChanged()
+	})
+	dock.OnVisibilityChanged(func(visible bool) {
+		cm.notifyStateChanged()
+	})
+
+	cm.redistributeDockHeights()
+	cm.notifyStateChanged()
+	return pv
 }
 
 // AddXLogView creates and tracks a group XLog view
@@ -357,9 +451,38 @@ func (cm *ChartManager) SavePerspectiveState() *settings.PerspectiveState {
 			ObjType:     gcv.ObjType(),
 			CounterName: gcv.CounterName(),
 			DisplayName: gcv.CounterDisplay(),
+			ViewMode:    gcv.ViewMode(),
 		})
 	}
 	ps.GroupCharts = groupConfigs
+
+	// Save today views
+	var todayConfigs []settings.GroupChartConfig
+	for _, tv := range cm.todayViews {
+		todayConfigs = append(todayConfigs, settings.GroupChartConfig{
+			ID:          tv.ID(),
+			GroupName:   tv.GroupName(),
+			ObjType:     tv.ObjType(),
+			CounterName: tv.CounterName(),
+			DisplayName: tv.CounterDisplay(),
+			ViewMode:    tv.ViewMode(),
+		})
+	}
+	ps.TodayViews = todayConfigs
+
+	// Save past views
+	var pastConfigs []settings.GroupChartConfig
+	for _, pv := range cm.pastViews {
+		pastConfigs = append(pastConfigs, settings.GroupChartConfig{
+			ID:          pv.ID(),
+			GroupName:   pv.GroupName(),
+			ObjType:     pv.ObjType(),
+			CounterName: pv.CounterName(),
+			DisplayName: pv.CounterDisplay(),
+			ViewMode:    pv.ViewMode(),
+		})
+	}
+	ps.PastViews = pastConfigs
 
 	// Save XLog views
 	var xlogConfigs []settings.XLogViewConfig
@@ -400,7 +523,21 @@ func (cm *ChartManager) RestorePerspectiveState(ps *settings.PerspectiveState) b
 
 	// Restore group counter charts
 	for _, gc := range ps.GroupCharts {
-		cm.addGroupChartWithID(gc.ID, gc.GroupName, gc.ObjType, gc.CounterName, gc.DisplayName)
+		if gc.ViewMode != "" && gc.ViewMode != "live-time-all" {
+			cm.addGroupChartWithIDAndMode(gc.ID, gc.GroupName, gc.ObjType, gc.CounterName, gc.DisplayName, gc.ViewMode)
+		} else {
+			cm.addGroupChartWithID(gc.ID, gc.GroupName, gc.ObjType, gc.CounterName, gc.DisplayName)
+		}
+	}
+
+	// Restore today views
+	for _, tc := range ps.TodayViews {
+		cm.addTodayViewWithID(tc.ID, tc.GroupName, tc.ObjType, tc.CounterName, tc.DisplayName, tc.ViewMode)
+	}
+
+	// Restore past views
+	for _, pc := range ps.PastViews {
+		cm.addPastViewWithID(pc.ID, pc.GroupName, pc.ObjType, pc.CounterName, pc.DisplayName, pc.ViewMode)
 	}
 
 	// Restore XLog views
@@ -413,10 +550,10 @@ func (cm *ChartManager) RestorePerspectiveState(ps *settings.PerspectiveState) b
 		cm.addEQViewWithID(ec.ID, ec.GroupName, ec.ObjType)
 	}
 
-	return len(ps.GroupCharts) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
+	return len(ps.GroupCharts) > 0 || len(ps.TodayViews) > 0 || len(ps.PastViews) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
 }
 
-// GetAllDocks returns all dock widgets (charts, group charts, xlogs, eqs)
+// GetAllDocks returns all dock widgets (charts, group charts, today, past, xlogs, eqs)
 func (cm *ChartManager) GetAllDocks() []*qt6.QDockWidget {
 	var docks []*qt6.QDockWidget
 	for _, cd := range cm.charts {
@@ -424,6 +561,12 @@ func (cm *ChartManager) GetAllDocks() []*qt6.QDockWidget {
 	}
 	for _, gcv := range cm.groupCharts {
 		docks = append(docks, gcv.Dock())
+	}
+	for _, tv := range cm.todayViews {
+		docks = append(docks, tv.Dock())
+	}
+	for _, pv := range cm.pastViews {
+		docks = append(docks, pv.Dock())
 	}
 	for _, xv := range cm.xlogViews {
 		docks = append(docks, xv.Dock())
@@ -478,6 +621,14 @@ func (cm *ChartManager) Destroy() {
 		gcv.Close()
 		gcv.Dock().DeleteLater()
 	}
+	for _, tv := range cm.todayViews {
+		tv.Close()
+		tv.Dock().DeleteLater()
+	}
+	for _, pv := range cm.pastViews {
+		pv.Close()
+		pv.Dock().DeleteLater()
+	}
 	for _, xv := range cm.xlogViews {
 		xv.Close()
 		xv.Dock().DeleteLater()
@@ -492,6 +643,8 @@ func (cm *ChartManager) Destroy() {
 	}
 	cm.charts = nil
 	cm.groupCharts = nil
+	cm.todayViews = nil
+	cm.pastViews = nil
 	cm.xlogViews = nil
 	cm.eqViews = nil
 	cm.activeServiceViews = nil
@@ -599,7 +752,7 @@ func main() {
 			perspMgr.Register(p)
 
 			// 모든 perspective의 dock 생성
-			hasState := len(ps.GroupCharts) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
+			hasState := len(ps.GroupCharts) > 0 || len(ps.TodayViews) > 0 || len(ps.PastViews) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
 			if hasState {
 				p.RestoreState(mainWindow, ps)
 				stateRestored = true
@@ -622,7 +775,7 @@ func main() {
 		p := perspective.NewServicePerspective(perspective.ServiceID, name, cm)
 		perspMgr.Register(p)
 		activePerspID = perspective.ServiceID
-		hasState := len(ps.GroupCharts) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
+		hasState := len(ps.GroupCharts) > 0 || len(ps.TodayViews) > 0 || len(ps.PastViews) > 0 || len(ps.XLogViews) > 0 || len(ps.EQViews) > 0
 		if hasState {
 			p.RestoreState(mainWindow, ps)
 			stateRestored = true
@@ -663,9 +816,30 @@ func main() {
 		return nil
 	}
 
-	// Set group chart callback - delegates to active perspective
-	groupNavView.SetOnAddGroupChart(func(groupName, objType, counterName, displayName string) {
-		if cm := getActiveChartManager(); cm != nil {
+	// Set group chart callback - delegates to active perspective with viewMode routing
+	groupNavView.SetOnAddGroupChart(func(groupName, objType, counterName, displayName string, viewMode string) {
+		cm := getActiveChartManager()
+		if cm == nil {
+			return
+		}
+		switch viewMode {
+		case "live-time-all":
+			cm.AddGroupChart(groupName, objType, counterName, displayName)
+		case "live-time-total":
+			cm.addGroupChartWithMode(groupName, objType, counterName, displayName, "live-time-total")
+		case "live-daily-all":
+			cm.AddTodayView(groupName, objType, counterName, displayName, "live-daily-all")
+		case "live-daily-total":
+			cm.AddTodayView(groupName, objType, counterName, displayName, "live-daily-total")
+		case "load-time-all":
+			cm.AddPastView(groupName, objType, counterName, displayName, "load-time-all")
+		case "load-time-total":
+			cm.AddPastView(groupName, objType, counterName, displayName, "load-time-total")
+		case "load-daily-all":
+			cm.AddPastView(groupName, objType, counterName, displayName, "load-daily-all")
+		case "load-daily-total":
+			cm.AddPastView(groupName, objType, counterName, displayName, "load-daily-total")
+		default:
 			cm.AddGroupChart(groupName, objType, counterName, displayName)
 		}
 	})
